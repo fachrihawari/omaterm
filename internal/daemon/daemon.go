@@ -24,6 +24,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -73,6 +74,9 @@ type Options struct {
 	// Voice writes down the phone's recordings: a voice.Server running
 	// whisper-server when nil (tests give a fake).
 	Voice Transcriber
+	// Push takes the phones' notifications in place of web access
+	// (tests).
+	Push func(web.Notice)
 }
 
 // Daemon is the running daemon.
@@ -88,12 +92,17 @@ type Daemon struct {
 	lock    *os.File
 	started time.Time
 	limit   notice.Limiter
+	// deskAt is when the desktop app last sent input, unix ms (push.go).
+	deskAt atomic.Int64
 	// stateMu orders the changes to state.json the daemon makes while no
 	// app runs.
 	stateMu      sync.Mutex
 	procMu       sync.Mutex
 	procProjects map[string]model.Project
 	procMtimes   map[string]fileStamp
+	// procOutput is each process session's last run's output, kept as its
+	// pane goes (see keepOutput).
+	procOutput map[string]keptOutput
 	// historyMu orders a pane's close against the writing of its
 	// scrollback, which reads it off the loop goroutine.
 	historyMu sync.Mutex
@@ -243,10 +252,12 @@ func Start(opts Options) (*Daemon, error) {
 	d.reg.OnExit = func(id string, code int) { d.changed() }
 	d.reg.OnStatus = func(info session.Info, prev session.Status) {
 		d.changed()
+		d.pushStatus(info, prev)
 		d.notifyStatus(info, prev)
 	}
 	d.reg.OnNotice = func(id, title, body string) {
 		d.broadcast(proto.Message{Event: "notice", Result: mustJSON(map[string]string{"pane": id, "title": title, "body": body})})
+		d.pushProgram(id, title, body)
 		d.notifyProgram(id, title, body)
 	}
 	os.MkdirAll(filepath.Dir(opts.Socket), 0o700)
@@ -601,6 +612,11 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		json.Unmarshal(raw, &p)
 		pn, err := pane(p.ID)
 		if err != nil {
+			// A process's run that ended: its pane is gone, its last
+			// lines kept.
+			if text, ok := d.keptOutput(p.ID, p.Lines); ok {
+				return proto.ReadResult{Text: text}, nil
+			}
 			return nil, err
 		}
 		return proto.ReadResult{Text: pn.Text(p.Scrollback, p.Lines)}, nil
@@ -651,7 +667,21 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 	case "viewed":
 		var p proto.IDParams
 		json.Unmarshal(raw, &p)
+		if p.ID != d.reg.Viewed() {
+			d.deskInput()
+		}
 		d.reg.SetViewed(p.ID)
+		return true, nil
+	case "seen":
+		// Web access shows a pane: its session's unread marks go, the
+		// desktop's viewed session stays.
+		var p proto.IDParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		d.reg.Seen(pn.Info().Session)
 		return true, nil
 	case "shutdown":
 		// Who asked, should the user wonder why their sessions restarted.
@@ -937,6 +967,9 @@ func (d *Daemon) attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 		kind, payload, err := proto.ReadFrame(r)
 		if err != nil {
 			return
+		}
+		if !web && (kind == proto.FrameInput || kind == proto.FrameKey || kind == proto.FramePaste) {
+			d.deskInput()
 		}
 		switch kind {
 		case proto.FrameInput:

@@ -18,7 +18,19 @@
 // So are the session's Files and Changes views: the project is a git
 // repository with a change, which the page lists and shows, and the
 // terminal still takes keys after them. With WEB_CHECK_SHOTS=<dir>, each
-// view is saved there as a PNG.
+// view is saved there as a PNG. A diff steps to the next changed file,
+// wraps, and asks about a line in Compose. Output shows a session's text,
+// its links and finds in it, and a process that crashed opens its last
+// lines. With WEB_CHECK_THEME=<file>, a theme as the app sends it
+// (web.setTheme; a light one, say), the page takes that look.
+//
+// So is the answer bar: a fake agent asks permission as Claude Code does,
+// the bar offers its options, a tap types the digit, a tap on a screen
+// that changed since is refused, and Stop sends Esc while it works.
+//
+// So are starting work from the phone: '+' opens the New Agent sheet,
+// which starts a shell session and opens it; and the compose box's 📎
+// sends a picture, whose path on the computer is pasted on its own.
 //
 // So is the connection: the phone's keyboard, opening, keeps the pane's
 // size and lifts the cursor into sight; a socket that died without a word
@@ -27,10 +39,17 @@
 // the drafts and Recent. And Compose's Recent puts a sent prompt back,
 // and When free lines one up for a fake agent that works on and on, and
 // takes it back.
+//
+// And what makes it a phone's app: the manifest, the service worker and
+// the icons are served as their types, the worker runs, and the list's
+// bell opens the notifications sheet, which can turn them on (a real
+// subscription needs a push service, so none is made).
 
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
 import { createServer, connect as dial } from "node:net";
+import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -80,6 +99,7 @@ const setVoice = (enabled) => {
   writeFileSync(settingsFile, JSON.stringify({ voice: { enabled, model: "tiny", language: "id" } }));
 };
 setVoice(true);
+if (process.env.WEB_CHECK_THEME) writeFileSync(join(env.XDG_CONFIG_HOME, name, "web-theme.json"), readFileSync(process.env.WEB_CHECK_THEME));
 mkdirSync(join(env.XDG_STATE_HOME, name, "voice"), { recursive: true });
 writeFileSync(join(env.XDG_STATE_HOME, name, "voice", "ggml-tiny.bin"), "not a model");
 const fakeBin = join(tmp, "fakebin");
@@ -104,6 +124,42 @@ createServer((req, res) => {
 env.PATH = `${fakeBin}:${env.PATH}`;
 
 const hex = (s) => Buffer.from(s, "latin1").toString("hex");
+
+// png is a w×h picture as a PNG, bands of color standing in for a
+// screenshot.
+const png = (w, h) => {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
+    return n >>> 0;
+  });
+  const crc = (b) => (b.reduce((c, x) => crcTable[(c ^ x) & 0xff] ^ (c >>> 8), 0xffffffff) ^ 0xffffffff) >>> 0;
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const out = Buffer.alloc(body.length + 8);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc(body), body.length + 4);
+    return out;
+  };
+  const rows = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const at = y * (w * 3 + 1) + 1 + x * 3;
+      const band = Math.floor(y / (h / 4));
+      rows[at] = [47, 99, 233, 30][band] ?? 30;
+      rows[at + 1] = [129, 213, 198, 30][band] ?? 30;
+      rows[at + 2] = [247, 141, 109, 30][band] ?? 30;
+      if (x > w * 0.1 && x < w * (0.3 + 0.15 * band) && y % (h / 4) > 10 && y % (h / 4) < 22) rows.fill(255, at, at + 3);
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
+};
 const got = () => (existsSync(logFile) ? readFileSync(logFile, "utf8") : "");
 const show = (h) => (h ? JSON.stringify(Buffer.from(h, "hex").toString("latin1")) : "nothing");
 
@@ -208,11 +264,13 @@ try {
   };
 
   // check runs an action and waits for the program to have read exactly
-  // what follows what it had read before.
+  // what follows what it had read before; want, when a function, tells it
+  // once the action is done.
   let seen = "";
   const check = async (name, want, action) => {
     try {
       await action();
+      if (typeof want === "function") want = await want();
     } catch (err) {
       failed++;
       console.log(`FAIL ${name}: ${err.message}`);
@@ -326,6 +384,34 @@ try {
     await waitFor("the diff did not show", `[...document.querySelectorAll(".dl.add .t")].some((e) => e.textContent.includes("hello from the phone"))`);
     await shot("diff");
   });
+  const diffOf = (path) => `decodeURIComponent(location.hash).endsWith("/changes/${path}") && document.querySelector(".bv-diff")`;
+  await check("changes: ‹ › step to the other changed file and back", "", async () => {
+    const [there, back] = await evaluate(`Boolean(document.querySelector('.bv-step[aria-label="Next file"]'))`) ? ["Next", "Previous"] : ["Previous", "Next"];
+    await tap(`.bv-step[aria-label="${there} file"]`);
+    await waitFor("notes.txt's diff did not show", `${diffOf("notes.txt")} && [...document.querySelectorAll(".dl.add .t")].some((e) => e.textContent === "new")`);
+    if (await evaluate(`Boolean(document.querySelector('.bv-step[aria-label="${there} file"]'))`)) throw new Error(`the end of the list has a ${there}`);
+    await tap(`.bv-step[aria-label="${back} file"]`);
+    await waitFor("main.go's diff did not come back", diffOf("src/main.go"));
+  });
+  await check("changes: a diff wraps until its button turns that off, which is kept", "", async () => {
+    const wraps = () => evaluate(`[document.querySelector(".bv-diff").classList.contains("wrap"), localStorage.getItem("omaterm.diff.wrap")]`);
+    if (!(await wraps())[0]) throw new Error("the diff does not wrap");
+    await tap(".bv-wrap");
+    const [on, kept] = await wraps();
+    if (on || kept !== "0") throw new Error(`after the tap, wrap ${on}, kept ${kept}`);
+    await tap(".bv-wrap");
+  });
+  await check("changes: a tap on a line's number asks about it in Compose, sending nothing", "", async () => {
+    await tap(".dl.add .n");
+    const want = 'src/main.go:4 — println("hello from the phone")\n';
+    await waitFor("Compose did not open with the line", `document.querySelector(".compose-box")?.value === ${JSON.stringify(want)} && !document.querySelector(".pane").dataset.view`);
+    await sleep(400);
+    await shot("diff-ask");
+    await evaluate(`(() => { const b = document.querySelector(".compose-box"); b.value = ""; b.dispatchEvent(new Event("input")); })()`);
+    await tap(".compose-close");
+    await evaluate("history.back()");
+    await waitFor("back did not go back to the diff", diffOf("src/main.go"));
+  });
   await check("back to the terminal, keys still reach it", hex("z"), async () => {
     await tap(".btn-close");
     await waitFor("the terminal did not come back", `!document.querySelector(".pane").dataset.view`);
@@ -334,6 +420,206 @@ try {
   await check("the button opens the view last seen", "", async () => {
     const to = await evaluate(`document.querySelector(".btn-browse").getAttribute("href")`);
     if (!to.endsWith("/changes")) throw new Error(`it opens ${to}`);
+  });
+
+  // Answering: an agent (goose, by its script's name, which omaterm reads
+  // no screen of) asks permission as Claude Code draws it, and logs what
+  // it reads as the probe does. "r" redraws the prompt for another
+  // command, "1" answers it and starts work, Esc ends that.
+  const asker = join(tmp, "goose.mjs");
+  writeFileSync(asker, `
+import { appendFileSync } from "node:fs";
+const osc = (s) => process.stdout.write("\\x1b]7501;" + s + "\\x1b\\\\");
+const ask = (dir) => {
+  process.stdout.write("\\x1b[2J\\x1b[H⏺ I'll clean up.\\r\\n\\r\\n Bash command\\r\\n\\r\\n   rm -rf " + dir + "\\r\\n   Remove the " + dir +
+    " folder\\r\\n\\r\\n Do you want to proceed?\\r\\n ❯ 1. Yes\\r\\n   2. Yes, and don't ask again for rm commands\\r\\n" +
+    "   3. No, and tell Claude what to do differently (esc)\\r\\n");
+  osc("state=blocked:kind=permission:msg=" + Buffer.from("Claude needs your permission to use Bash").toString("base64"));
+};
+process.stdin.setRawMode(true);
+process.stdin.on("data", (b) => {
+  appendFileSync(${JSON.stringify(logFile)}, b.toString("hex"));
+  const s = b.toString();
+  if (s === "r") ask("dist");
+  if (s === "1") { process.stdout.write("\\x1b[2J\\x1b[H⏺ Removing build…\\r\\n"); osc("state=working"); }
+  if (s === "\\x1b") { process.stdout.write("Interrupted\\r\\n"); osc("state=done"); }
+});
+ask("build");
+setInterval(() => {}, 1 << 30);
+`);
+  // Beside it, one session that failed after it began to wait, and one
+  // that finished: the inbox's.
+  const failText = "The tests failed: 3 of 120 in internal/web, as the fixture's daemon did not start on a free port in time";
+  const b64 = (s) => Buffer.from(s).toString("base64");
+  const paneOf = (sid) => JSON.parse(omaterm("ls", "--json")).find((s) => s.id === sid).focus;
+  const askPane = paneOf(omaterm("new", "-n", "asker", "-d", dir, "--", process.execPath, asker));
+  await sleep(1200);
+  omaterm("new", "-n", "failer", "-d", dir, "--", "sh", "-c", `printf '\\033]7501;state=error:msg=${b64(failText)}\\033\\\\'; exec cat`);
+  const finPane = paneOf(omaterm("new", "-n", "finisher", "-d", dir, "--", "sh", "-c",
+    `printf '\\033]7501;state=working\\033\\\\'; sleep 0.3; printf '\\033]7501;state=done:msg=${b64("Tests pass")}\\033\\\\'; exec cat`));
+  const lead = (name) => `fetch("/api/state").then((r) => r.json()).then((st) => st.sessions.find((s) => s.name === ${JSON.stringify(name)})?.lead)`;
+
+  await check("inbox: Needs you holds the waiting and failed sessions, longest waiting first", "", async () => {
+    await evaluate(`location.hash = "#"`);
+    await waitFor("no Needs you", `document.querySelectorAll(".needs .row").length === 2`);
+    const names = await evaluate(`[...document.querySelectorAll(".needs .row .nm")].map((e) => e.textContent).join()`);
+    if (names !== "asker,failer") throw new Error(`Needs you holds ${names}`);
+  });
+  await check("inbox: the done count is the finished session only", "", async () => {
+    await waitFor("finisher is not done", `${lead("finisher")}.then((l) => l?.status === "idle" && l.unread)`);
+    const chip = `document.querySelector('.side-f .chipc[title="Done sessions"]')?.textContent.trim()`;
+    await waitFor("no done chip", `Boolean(${chip})`);
+    const n = await evaluate(chip);
+    if (n !== "1") throw new Error(`the done chip says ${n}`);
+  });
+  await check("inbox: a row's line, tapped, shows whole, and opens nothing", "", async () => {
+    await tap(".needs .row .sub", failText);
+    await waitFor("the line is still cut", `document.querySelector(".needs .row .sub.whole")?.textContent === ${JSON.stringify(failText)}`);
+    if (await evaluate("location.hash")) throw new Error("the tap opened the session");
+    await shot("inbox");
+  });
+  await check("inbox: the done chip opens the finished session, which it then sees", "", async () => {
+    await tap('.side-f .chipc[title="Done sessions"]');
+    await waitFor("it opened another", `location.hash === "#/pane/${finPane}"`);
+    await waitFor("still unread", `${lead("finisher")}.then((l) => !l.unread)`);
+    await evaluate(`location.hash = "#"`);
+    await waitFor("the done chip stays", `!document.querySelector('.side-f .chipc[title="Done sessions"]')`);
+  });
+
+  const answerText = `[...document.querySelectorAll(".answer:not([hidden]) .answer-opt")].map((b) => b.textContent)`;
+  await check("answer bar: the whole question and the screen's options", "", async () => {
+    if (!(await evaluate(`${lead("asker")}.then((l) => l.unread)`))) throw new Error("asker is not unread");
+    await tap(".needs .row .nm", "asker");
+    await waitFor("no answer bar", `${answerText}.length === 3`);
+    const q = await evaluate(`document.querySelector(".answer-q").textContent`);
+    if (q !== "Claude needs your permission to use Bash") throw new Error(`the question is ${JSON.stringify(q)}`);
+    const opts = await evaluate(`JSON.stringify(${answerText})`);
+    if (opts !== JSON.stringify(["1Yes", "2Yes, and don't ask again for rm commands", "3No, and tell Claude what to do differently"])) {
+      throw new Error(`the options are ${opts}`);
+    }
+    await sleep(600);
+    await shot("answer");
+  });
+  await check("inbox: opening a session on the phone sees it", "", async () => {
+    await waitFor("asker is still unread", `${lead("asker")}.then((l) => !l.unread)`);
+  });
+  await check("answer bar: a tap on a screen that changed since is refused", hex("r"), async () => {
+    await key("r", "KeyR", "r");
+    // Tapped as the new prompt shows, before the bar reads it again.
+    const said = await evaluate(`(async () => {
+      for (let i = 0; i < 300 && !document.querySelector(".xterm-rows").textContent.includes("rm -rf dist"); i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      document.querySelector(".answer-opt").click();
+      return document.querySelector(".answer-note").textContent;
+    })()`);
+    if (!said.startsWith("The screen changed")) throw new Error(`the bar says ${JSON.stringify(said)}`);
+  });
+  await check("answer bar: a tap types the option's digit", hex("1"), async () => {
+    await sleep(700);
+    await tap(".answer-opt");
+  });
+  await check("answer bar: gone while the agent works, and Stop sends Esc", hex("\x1b"), async () => {
+    await waitFor("no Stop", `!document.querySelector(".answer-stop").hidden && !document.querySelector(".answer:not([hidden])")`);
+    await sleep(600);
+    await shot("stop");
+    await tap(".answer-stop");
+  });
+  await check("answer bar: none once the agent is done", "", async () => {
+    await waitFor("the Stop stays", `document.querySelector(".answer-stop").hidden`);
+  });
+  await evaluate(`location.hash = "#/pane/${pane}"`);
+  await sleep(1500);
+
+  await check("a touch screen 860 px wide or more keeps the key bar and Compose, but no back", "", async () => {
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 2, mobile: false });
+    await sleep(600);
+    const shown = (sel) => `getComputedStyle(document.querySelector(${JSON.stringify(sel)})).display !== "none"`;
+    const got = await evaluate(`[${shown(".term-bottom")}, ${shown(".btn-compose")}, ${shown(".back-btn")}].join()`);
+    await shot("tablet");
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await sleep(600);
+    if (got !== "true,true,false") throw new Error(`key bar, Compose, back: ${got}`);
+  });
+
+  // Output reads a session of a project of its own that printed lines,
+  // and a process of it that crashed: its definition trusted as omaterm
+  // trusts one, by the hash of what it runs (procs.Def.Variant).
+  const procDir = join(tmp, "Projects", "procs");
+  mkdirSync(procDir, { recursive: true });
+  const crash = "echo listening on http://localhost:3999; echo Error: boom; exit 1";
+  writeFileSync(join(procDir, "omaterm.yml"), `processes:\n  crash:\n    command: ${JSON.stringify(crash)}\n`);
+  const variant = createHash("sha256").update(JSON.stringify({ command: crash, dir: "", env: null, port: 0, restart: "never", watch: null })).digest("hex");
+  writeFileSync(join(env.XDG_CONFIG_HOME, name, "trust.json"), JSON.stringify({ version: 1, projects: { [procDir]: { [variant]: new Date().toISOString() } } }));
+  const printed = "build started\nsee https://example.com/docs?a=1. for more, not file:///etc/passwd\n" +
+    "local http://localhost:3000/ http://127.0.0.1:8080 http://[::1]:5173 https://shop.localhost\nerror: one\nerror: two\nerror: three\n";
+  const outSid = omaterm("new", "-n", "build-logs", "-d", procDir, "--", "sh", "-c", `printf '${printed}'; exec sleep 600`);
+  const outPane = JSON.parse(omaterm("ls", "--json")).find((s) => s.id === outSid).focus;
+  const marked = `[...document.querySelectorAll(".bv-out mark.on")].map((m) => m.textContent).join("")`;
+
+  await check("output: a session's text, its web links, and nothing else linked, the loopback ones neither", "", async () => {
+    // Its terminal opened first starts it, as the list's row does.
+    await evaluate(`location.hash = "#/pane/${outPane}"`);
+    await waitFor("its terminal did not open", `document.querySelector(".xterm-rows")?.textContent.includes("error: three")`);
+    await evaluate(`location.hash = "#/pane/${outPane}/output"`);
+    await waitFor("the output did not show", `document.querySelector(".bv-out")?.textContent.includes("error: three")`);
+    const links = await evaluate(`JSON.stringify([...document.querySelectorAll(".bv-out a")].map((a) => [a.getAttribute("href"), a.textContent, a.target, a.rel]))`);
+    if (links !== JSON.stringify([["https://example.com/docs?a=1", "https://example.com/docs?a=1", "_blank", "noopener noreferrer"]])) throw new Error(`the links are ${links}`);
+    await waitFor("the session's name did not show", `document.querySelector(".grip .t").textContent === "build-logs"`);
+    await shot("output");
+  });
+  await check("output: the switch leaves a name of ten letters whole, at 360 px too", "", async () => {
+    for (const width of [360, 390]) {
+      await cdp("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 2, mobile: true });
+      await sleep(300);
+      if (width === 360) await shot("output-360");
+      if (await evaluate(`(() => { const t = document.querySelector(".grip .t"); return t.scrollWidth > t.clientWidth; })()`)) {
+        throw new Error(`at ${width} px the name is cut`);
+      }
+    }
+  });
+  await check("output: Find counts the hits, its case ignored, and jumps between them", "", async () => {
+    await tap('.bv-btn[aria-label="Find"]');
+    await evaluate(`document.querySelector(".bv-find").focus()`);
+    await cdp("Input.insertText", { text: "ERROR" });
+    const at = (n) => waitFor(`not at hit ${n}`, `document.querySelector(".bv-count").textContent === "${n}/3" && document.querySelector('.bv-out mark.on[data-hit="${n - 1}"]') && ${marked} === "error"`);
+    await at(1);
+    await tap('.bv-btn[aria-label="Next"]');
+    await at(2);
+    await shot("output-find");
+    await tap('.bv-btn[aria-label="Previous"]');
+    await at(1);
+    await tap('.bv-btn[aria-label="Previous"]');
+    await at(3);
+    await tap(".bv-done");
+    await waitFor("the hits stayed marked", `!document.querySelector(".bv-out mark") && document.querySelector(".bv-findbar").hidden`);
+  });
+  await check("output: a process that crashed opens its last lines, and starts nothing", "", async () => {
+    const inProcs = (...args) => execFileSync(bin, args, { env, cwd: procDir, encoding: "utf8" }).trim();
+    for (let i = 0; ; i++) {
+      try { inProcs("start", "crash"); break; } catch (err) { if (i > 50) throw err; await sleep(200); }
+    }
+    let crashPane = "";
+    for (let i = 0; i < 50 && !crashPane; i++) {
+      crashPane = await evaluate(`fetch("/api/state").then((r) => r.json()).then((st) => {
+        const s = st.sessions.find((s) => s.process === "crash");
+        return s?.proc?.status === "failed" ? s.panes[0].id : "";
+      })`);
+      if (!crashPane) await sleep(200);
+    }
+    if (!crashPane) throw new Error("the process did not crash: " + inProcs("ps"));
+    await evaluate(`location.hash = "#/pane/${crashPane}"`);
+    await waitFor("its output did not open", `location.hash.endsWith("/output") && document.querySelector(".bv-out")?.textContent.includes("Error: boom")`);
+    const sum = await evaluate(`document.querySelector(".bv-sum").textContent`);
+    if (!sum.startsWith("crash isn't running")) throw new Error(`the bar says ${sum}`);
+    await shot("output-stopped");
+    if (!/crash\s+failed/.test(inProcs("ps"))) throw new Error("reading it started it: " + inProcs("ps"));
+    const read = inProcs("read", "crash");
+    if (!read.includes("Error: boom")) throw new Error(`omaterm read crash says ${JSON.stringify(read)}`);
+  });
+  await check("back to the first session's terminal", "", async () => {
+    await evaluate(`location.hash = "#/pane/${pane}"`);
+    await waitFor("its terminal did not come back", `!document.querySelector(".pane").dataset.view && !document.querySelector(".btn-compose").hidden`);
   });
 
   await check("voice: the mic writes into the box in the default language, sending nothing", "", async () => {
@@ -367,6 +653,99 @@ try {
     await tap(".compose-close");
   });
 
+  // New Agent: '+' opens the sheet, which starts a shell in the project
+  // and opens it. No agent is started: a real one would run.
+  await check("new agent: the sheet starts a shell session, and opens it", "", async () => {
+    const before = JSON.parse(omaterm("ls", "--json")).length;
+    await evaluate(`location.hash = "#/"`);
+    await waitFor("the list did not show", `Boolean(document.querySelector(".proj .add"))`);
+    await tap(".proj .add");
+    await waitFor("the sheet's agents did not load", `document.querySelectorAll(".na-chip").length === 6`);
+    await sleep(400);
+    await shot("new-agent");
+    await tap(".na-chip", "Shell only");
+    await waitFor("a shell still asks for a first task", `document.querySelector("#na-task").closest(".na-field").hidden`);
+    await tap(".na-start");
+    await waitFor("no new session opened", `/^#\\/pane\\//.test(location.hash) && !location.hash.endsWith(${JSON.stringify(pane)})`);
+    const n = JSON.parse(omaterm("ls", "--json")).length;
+    if (n !== before + 1) throw new Error(`${n} sessions, after ${before}`);
+  });
+  await check("new agent: an agent in a worktree of its own, with a first task, as the sheet shows it", "", async () => {
+    await evaluate(`location.hash = "#/"`);
+    await waitFor("the list did not show", `Boolean(document.querySelector(".proj .add"))`);
+    await tap(".proj .add");
+    await waitFor("the sheet's agents did not load", `document.querySelectorAll(".na-chip").length === 6`);
+    await tap(".na-chip", "Claude Code");
+    await tap(".na-switch");
+    await waitFor("no branch to name", `!document.querySelector("#na-branch").closest(".na-sub").hidden`);
+    await evaluate(`document.querySelector("#na-branch").focus()`);
+    await cdp("Input.insertText", { text: "fix-login" });
+    await evaluate(`document.querySelector("#na-task").focus()`);
+    await cdp("Input.insertText", { text: "The login button does nothing on a phone: find out why and fix it." });
+    const hint = await evaluate(`document.querySelector(".na-sub .na-hint").textContent`);
+    if (hint !== "A new branch from main, in check/.worktrees/fix-login.") throw new Error(`the hint says ${hint}`);
+    await evaluate(`document.activeElement.blur()`);
+    await sleep(300);
+    await shot("new-agent-worktree");
+    await tap(".na-cancel");
+    await waitFor("the sheet did not close", `!document.querySelector(".na")`);
+  });
+
+  // A photo: the compose box's 📎 sends a picture; the path the computer
+  // keeps it at is pasted, on its own, without Enter; Send then presses
+  // Enter, and the thumbnail goes.
+  const picture = join(tmp, "screenshot.png");
+  writeFileSync(picture, png(1170, 760));
+  await check("photo: the path it is kept at is pasted, without Enter", async () =>
+    hex(await evaluate(`document.querySelector(".compose-shots img")?.title || ""`)), async () => {
+    await evaluate(`location.hash = ${JSON.stringify("#/pane/" + pane)}`);
+    await waitFor("the terminal did not open", `Boolean(document.querySelector(".btn-compose:not([hidden])"))`);
+    await sleep(500);
+    await tap(".btn-compose");
+    await waitFor("no 📎 in the compose box", `Boolean(document.querySelector(".compose-attach input"))`);
+    const { result } = await cdp("Runtime.evaluate", { expression: `document.querySelector(".compose-attach input")` });
+    await cdp("DOM.setFileInputFiles", { files: [picture], objectId: result.objectId });
+    await waitFor("no thumbnail: " + await evaluate(`document.querySelector(".compose-note").textContent`),
+      `Boolean(document.querySelector(".compose-shots img"))`);
+    const path = await evaluate(`document.querySelector(".compose-shots img").title`);
+    if (!/[\\/]uploads[\\/]phone-[0-9a-f]{16}\.jpg$/.test(path)) throw new Error(`kept at ${path}`);
+    await evaluate(`document.activeElement.blur()`);
+    await sleep(300);
+    await shot("photo");
+  });
+  await check("photo: Send presses Enter, and the thumbnail goes", hex("\r"), async () => {
+    await tap(".compose-send");
+    await waitFor("the thumbnail stays", `!document.querySelector(".compose-shots img")`);
+  });
+
+  await check("notifications: the manifest, worker and icons are served as their types", "", async () => {
+    for (const [path, type] of [["/manifest.json", "application/json"], ["/sw.js", "text/javascript"],
+      ["/icon-180.png", "image/png"], ["/icon-192.png", "image/png"], ["/icon-512.png", "image/png"]]) {
+      const res = await fetch(base + path);
+      const got = res.headers.get("content-type") || "";
+      if (!res.ok || !got.startsWith(type)) throw new Error(`${path} is ${res.status} ${got}`);
+    }
+    const linked = await evaluate(`[...document.querySelectorAll('link[rel="manifest"], link[rel="apple-touch-icon"]')].length`);
+    if (linked !== 2) throw new Error(`the page links ${linked} of the manifest and the touch icon`);
+  });
+  await check("notifications: the worker runs, and the list's bell opens its sheet", "", async () => {
+    await waitFor("the service worker isn't running", `navigator.serviceWorker.getRegistration().then((r) => Boolean(r?.active))`);
+    await evaluate(`location.hash = ""`);
+    await waitFor("no bell in the list's footer", `Boolean(document.querySelector(".side-f .bell")?.getClientRects().length)`);
+    await shot("push-list");
+    await tap(".side-f .bell");
+    await waitFor("the bell opened no sheet", `Boolean(document.querySelector(".push-sheet .push-on"))`);
+    const st = await evaluate(`[".push-on", ".push-words", ".push-programs"].map((s) => document.querySelector(s))
+      .map((e) => e.disabled + "/" + e.checked).concat(document.querySelector(".push-note").hidden)`);
+    if (st.join() !== "false/false,true/false,true/false,true") {
+      throw new Error(`notify, words and programs disabled/checked, then the note hidden: ${st}`);
+    }
+    await sleep(300);
+    await shot("push-sheet");
+    await tap(".push-close");
+    await waitFor("the sheet stayed", `!document.querySelector(".push-sheet")`);
+  });
+
   const typeInBox = async (text) => {
     await tap(".btn-compose");
     await sleep(400);
@@ -374,6 +753,9 @@ try {
     await cdp("Input.insertText", { text });
   };
   await check("compose: Recent puts back a prompt sent before", hex("recover me\r"), async () => {
+    await evaluate(`location.hash = "#/pane/${pane}"`);
+    await waitFor("the terminal did not open", `Boolean(document.querySelector(".btn-compose:not([hidden])"))`);
+    await sleep(500);
     await typeInBox("recover me");
     if (!(await evaluate(`document.querySelector(".compose-later").hidden`))) throw new Error("When free is offered for a program that is no agent");
     await tap(".compose-send");

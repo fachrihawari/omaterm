@@ -21,10 +21,6 @@ import (
 	"omaterm/service"
 )
 
-// worktreeAgents are the agents New Agent starts: those that resume their
-// conversation after a restart, then Antigravity, then "shell" for none.
-var worktreeAgents = []string{"claude", "codex", "opencode", "pi", "agy", "shell"}
-
 // worktreeNew is the New Agent dialog.
 type worktreeNew struct {
 	open          bool
@@ -35,7 +31,7 @@ type worktreeNew struct {
 	branch        string
 	base          string
 	bases         []string // its branches, nil until listed
-	agent         string   // of worktreeAgents
+	agent         string   // of agent.Starters
 	env           bool     // copy the .env files
 	busy          bool     // making the worktree
 	err           string
@@ -51,7 +47,7 @@ func (a *appState) openWorktreeDialog(pi int) {
 	git := service.RepoRoot(p.Path) != ""
 	st := &worktreeNew{open: true, project: p.ID, name: p.Name, dir: p.Path, git: git, worktree: git && a.wtUse,
 		agent: a.wtAgent, env: a.wtEnv}
-	if !slices.Contains(worktreeAgents, st.agent) {
+	if !slices.Contains(agent.Starters, st.agent) {
 		st.agent = defaultWorktreeAgent()
 	}
 	a.wtNew = st
@@ -90,7 +86,7 @@ func (a *appState) openWorktreeDialog(pi int) {
 // finds them, else Claude Code: one on the login shell's PATH alone runs
 // all the same.
 func defaultWorktreeAgent() string {
-	for _, name := range worktreeAgents[:len(worktreeAgents)-1] {
+	for _, name := range agent.Starters[:len(agent.Starters)-1] {
 		if _, err := exec.LookPath(name); err == nil {
 			return name
 		}
@@ -118,8 +114,8 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 		}
 		ui.Text(c, about).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
 		dialogField(c, "Agent", func() {
-			opts := make([][2]string, len(worktreeAgents))
-			for i, name := range worktreeAgents {
+			opts := make([][2]string, len(agent.Starters))
+			for i, name := range agent.Starters {
 				opts[i] = [2]string{name, agent.DisplayName(name)}
 			}
 			opts[len(opts)-1][1] = "Shell only"

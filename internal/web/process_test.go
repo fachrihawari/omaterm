@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -24,9 +25,14 @@ import (
 )
 
 // newProcessFixture is newFixture for a project that defines a process,
-// web, and trusts it. The process has not started.
-func newProcessFixture(t *testing.T) *fixture {
+// web, and trusts it: it runs command, sleep 600 unless given. The
+// process has not started.
+func newProcessFixture(t *testing.T, command ...string) *fixture {
 	t.Helper()
+	run := "sleep 600"
+	if len(command) > 0 {
+		run = command[0]
+	}
 	// A short folder, for the socket's path; the trust goes in its config.
 	dir, err := os.MkdirTemp("", "omw")
 	if err != nil {
@@ -41,7 +47,7 @@ func newProcessFixture(t *testing.T) *fixture {
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(project, procs.FileName), []byte("processes:\n  web:\n    command: sleep 600\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, procs.FileName), []byte("processes:\n  web:\n    command: "+strconv.Quote(run)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	defs, err := procs.LoadFile(project)

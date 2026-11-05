@@ -239,6 +239,13 @@ func (r *Registry) SetViewed(sessionID string) {
 	r.mu.Lock()
 	r.viewed = sessionID
 	r.mu.Unlock()
+	r.Seen(sessionID)
+}
+
+// Seen marks a session's changes seen, as web access shows it on a phone:
+// its unread marks go, but the session the desktop shows stays as it is,
+// so what comes later while the phone looks is unread again.
+func (r *Registry) Seen(sessionID string) {
 	if sessionID == "" {
 		return
 	}

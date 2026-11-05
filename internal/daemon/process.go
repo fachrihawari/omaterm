@@ -56,7 +56,10 @@ func (r daemonRunner) Get(id string) session.Handle {
 	return p
 }
 
-func (r daemonRunner) Remove(id string) { r.d.endPane(id) }
+func (r daemonRunner) Remove(id string) {
+	r.d.keepOutput(id)
+	r.d.endPane(id)
+}
 
 // loadProcesses reads every project's process definitions, the omaterm.yml
 // ones first and the local ones from state.json after, and gives them to
@@ -204,6 +207,7 @@ func (d *Daemon) processList(project string) []proto.Process {
 // to show it, notifies the desktop of a failure or a paused restart.
 func (d *Daemon) processEvent(event procs.Event) {
 	d.broadcast(proto.Message{Event: "process", Result: mustJSON(event)})
+	d.pushProcess(event)
 	if d.appAttached() || !d.notifyPrefs().Error {
 		return
 	}

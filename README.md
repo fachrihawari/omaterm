@@ -45,7 +45,9 @@ an editor and a browser sit next to your shells.
   reboot, agents resume the same conversation.
 - **On your phone.** Pair a browser with a QR code, then watch and type into
   any session, in the app's own look, with a key bar and a box for writing
-  prompts. omaterm can run the Tailscale or Cloudflare tunnel for you.
+  prompts. Get notified when an agent needs you, answer it in a tap, start new
+  agents and read what they changed. omaterm can run the Tailscale or
+  Cloudflare tunnel for you.
 - **Everything next to the terminal.** A Git panel, commit graph, diffs, a
   file tree, an editor and browser panes.
 - **Scriptable.** The `omaterm` command lets agents and scripts open panes,
@@ -402,12 +404,35 @@ keyboard: **Send** pastes it and presses Enter, **Insert** only pastes it.
 Keys reach the program as it asked for them, so Ctrl+Enter and Shift+Tab work
 in agents that take them.
 
+**When an agent asks**, its whole question shows over the key bar with its
+choices as buttons (Yes, Yes and don't ask again, No): one tap answers. While
+an agent works, **Stop** interrupts it. **Needs you**, at the top of the
+list, holds the sessions waiting for you or failed, across projects, and a
+session you open on the phone counts as seen on the computer too.
+
 The **folder** button in a session's header shows what its agent works on,
-to read: **Files**, its folder (an agent's worktree, else the project) with
-each file's text or picture, and **Changes**, the files it changed with each
-one's diff, since the last commit or, in a worktree, since its base branch.
+to read: **Output**, the session's text to read whole, copy and search, with
+its links (a process that crashed shows its last lines there); **Files**, its
+folder (an agent's worktree, else the project) with each file's text or
+picture; and **Changes**, the files it changed with each one's diff, since the
+last commit or, in a worktree, since its base branch. In a diff, ‹ › go to
+the next file, and a tap on a line's number asks the agent about that line.
 The terminal keeps running behind them; **×** goes back to it. Nothing there
 edits, stages or commits.
+
+**+** starts a new agent from the phone, Claude Code, Codex, OpenCode or
+another, in a worktree of its own if you like, with a first task typed in
+once it is ready. In the compose box, **📎** sends a photo or a screenshot:
+omaterm keeps a copy on the computer for a day, without its location, and
+pastes its path into the prompt.
+
+**Notifications:** the bell in the list turns them on for that phone. A
+session that needs you, failed or finished reaches its lock screen, though not
+while you are using the computer. They name only the session and what
+happened, unless you let them show what the agent says. Add the page to your
+home screen to have omaterm as an app; an iPhone needs that for notifications
+(iOS 16.4 or later), and the app pairs again with a code from
+`omaterm web pair`. Notifications need HTTPS: Tailscale or Cloudflare.
 
 **Voice input** puts a mic in the compose box: speak a prompt, and
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) writes it down on your

@@ -56,17 +56,6 @@ func (f *fixture) busyAgent(t *testing.T) string {
 	})
 }
 
-func (f *fixture) do(t *testing.T, c *http.Client, method, path, body string) *http.Response {
-	t.Helper()
-	req, _ := http.NewRequest(method, f.base+path, strings.NewReader(body))
-	req.Header.Set("Origin", f.base)
-	res, err := c.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return res
-}
-
 func (f *fixture) queued(t *testing.T, c *http.Client, pane string) []struct{ ID, Text string } {
 	t.Helper()
 	res := f.do(t, c, "GET", "/api/panes/"+pane+"/queue", "")

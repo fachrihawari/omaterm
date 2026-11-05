@@ -192,6 +192,11 @@ a { color: inherit; text-decoration: none; }
   font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .row .tm { font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; margin-left: auto; flex: none; }
+/* A row's line, tapped, shows whole. */
+.row .sub.whole { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Needs you, over the projects: its rows name their project. */
+.needs .proj { color: var(--attention); }
+.needs .row .br { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
 
 /* Process pill */
 .pill {
@@ -427,6 +432,51 @@ a.bv-crumb:hover { color: var(--text); }
 .dl.hunk { color: var(--text-faint); background: color-mix(in srgb, var(--info) 8%, var(--card)); margin-top: 6px; }
 .dl.hunk:first-child { margin-top: 0; }
 .dl.note .t { color: var(--text-faint); font-style: italic; }
+/* A diff's bar steps to the changed file before and after it, and wraps
+   its long lines (on unless turned off, and kept); a tap on a line's
+   number asks about it. */
+.bv-btn[aria-pressed="true"] { color: var(--accent); }
+.bv-btn.off, .bv-btn:disabled { opacity: 0.35; cursor: default; background: none; }
+.bv-diff.wrap { min-width: 0; }
+.bv-diff.wrap .dl .t {
+  flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  padding-left: calc(6px + 1.4ch); text-indent: -1.4ch; /* a wrapped line goes on under the code, past its + or − */
+}
+.bv-diff.wrap .dl .t::before { text-indent: 0; }
+.bv-diff.ask .dl:not(.hunk) :is(.o, .n) { cursor: pointer; }
+.bv-diff.ask .dl:not(.hunk) :is(.o, .n):active { color: var(--accent); }
+/* Output (output.js): the pane's text at a reading size, wrapped, to
+   select, copy and find in; its bar and find stay on top. */
+.bv-head { position: sticky; top: 0; z-index: 2; }
+.bv-head .bv-bar { position: static; }
+.bv-findbar { gap: 4px; padding: 4px 8px; }
+.bv-find {
+  flex: 1; min-width: 0; height: 28px; padding: 0 10px; border: 1px solid var(--border-strong);
+  border-radius: 7px; background: var(--input); font-size: 13px; outline: none;
+}
+.bv-find:focus { border-color: var(--accent); }
+.bv-count { min-width: 4ch; text-align: right; font-family: var(--mono); }
+.bv-done { flex: none; height: 28px; padding: 0 6px; font-size: 13px; color: var(--accent); }
+.bv-copy {
+  display: flex; flex: none; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
+  border-radius: 7px; font-size: 12px; color: var(--text-muted);
+}
+.bv-copy:hover { background: var(--hover); color: var(--text); }
+.bv-copy.done { color: var(--ok); }
+.bv-out {
+  margin: 0; padding: 10px 14px 24px; font: 14px/1.5 var(--mono); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; user-select: text; -webkit-user-select: text;
+}
+.bv-out a { color: var(--accent); text-underline-offset: 2px; }
+.bv-hit { background: var(--attention-soft); color: inherit; border-radius: 2px; }
+.bv-hit.on { background: color-mix(in srgb, var(--attention) 55%, transparent); outline: 1px solid var(--attention); }
+@media (max-width: 859px) {
+  .bv-bar .bv-btn, .bv-bar .bv-refresh { width: 36px; height: 36px; border-radius: 8px; }
+  .bv-bar .bv-btn svg, .bv-bar .bv-refresh svg { width: 18px; height: 18px; }
+  .bv-copy, .bv-done { height: 36px; font-size: 13px; }
+  /* 16 px, or iOS zooms the page as it focuses. */
+  .bv-find { height: 36px; font-size: 16px; }
+}
 
 /* Phone bottom container slots (for keys.js and compose.js) */
 .term-bottom {
@@ -457,7 +507,13 @@ a.bv-crumb:hover { color: var(--text); }
   .btn-compose, .btn-view { width: 36px; height: 36px; border-radius: 8px; }
   .btn-compose svg, .btn-view svg { width: 18px; height: 18px; }
   .pane-view .row { min-height: 44px; padding: 8px 12px; }
-  .bv-seg a { height: 32px; padding: 0 12px; font-size: 13px; }
+  /* Output, Files and Changes, and a name of ten letters, fit between
+     back and close on a 360 px phone: the switch and the header's gaps
+     are tight there, and the switch takes the spacer's place. */
+  .bv-seg a { height: 32px; padding: 0 6px; font-size: 13px; }
+  .pane[data-view] .ph { gap: 4px; }
+  .pane[data-view] .ph .sp { display: none; }
+  .pane[data-view] .bv-seg { margin-left: auto; }
   .proj .add { width: 36px; height: 36px; opacity: 1; }
   .side-f .chipc { height: 32px; padding: 0 10px; }
   .side-f .link { padding: 8px 10px; }
@@ -473,10 +529,13 @@ a.bv-crumb:hover { color: var(--text); }
     flex: none;
   }
 }
+/* Wide, the list is beside the terminal: no back. A mouse and a keyboard
+   need no key bar or Compose, but a touch screen does, a tablet's too
+   (the touch class, app.js). */
 @media (min-width: 860px) {
   .back-btn { display: none !important; }
-  .btn-compose { display: none !important; }
-  .term-bottom { display: none !important; }
+  :root:not(.touch) .btn-compose { display: none !important; }
+  :root:not(.touch) .term-bottom { display: none !important; }
 }
 .btn-compose[hidden] { display: none !important; }
 /* How many prompts wait for the agent to be free, which Compose lists. */
