@@ -402,6 +402,13 @@ keyboard: **Send** pastes it and presses Enter, **Insert** only pastes it.
 Keys reach the program as it asked for them, so Ctrl+Enter and Shift+Tab work
 in agents that take them.
 
+The **folder** button in a session's header shows what its agent works on,
+to read: **Files**, its folder (an agent's worktree, else the project) with
+each file's text or picture, and **Changes**, the files it changed with each
+one's diff, since the last commit or, in a worktree, since its base branch.
+The terminal keeps running behind them; **×** goes back to it. Nothing there
+edits, stages or commits.
+
 **Voice input** puts a mic in the compose box: speak a prompt, and
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) writes it down on your
 computer into the box, to check before you send it. On the desktop, on Linux
