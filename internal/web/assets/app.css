@@ -498,7 +498,13 @@ a.bv-crumb:hover { color: var(--text); }
   .btn-compose, .btn-view { width: 36px; height: 36px; border-radius: 8px; }
   .btn-compose svg, .btn-view svg { width: 18px; height: 18px; }
   .pane-view .row { min-height: 44px; padding: 8px 12px; }
-  .bv-seg a { height: 32px; padding: 0 12px; font-size: 13px; }
+  /* Output, Files and Changes, and a name of ten letters, fit between
+     back and close on a 360 px phone: the switch and the header's gaps
+     are tight there, and the switch takes the spacer's place. */
+  .bv-seg a { height: 32px; padding: 0 6px; font-size: 13px; }
+  .pane[data-view] .ph { gap: 4px; }
+  .pane[data-view] .ph .sp { display: none; }
+  .pane[data-view] .bv-seg { margin-left: auto; }
   .proj .add { width: 36px; height: 36px; opacity: 1; }
   .side-f .chipc { height: 32px; padding: 0 10px; }
   .side-f .link { padding: 8px 10px; }

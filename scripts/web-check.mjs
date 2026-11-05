@@ -343,7 +343,7 @@ try {
   const variant = createHash("sha256").update(JSON.stringify({ command: crash, dir: "", env: null, port: 0, restart: "never", watch: null })).digest("hex");
   writeFileSync(join(env.XDG_CONFIG_HOME, name, "trust.json"), JSON.stringify({ version: 1, projects: { [procDir]: { [variant]: new Date().toISOString() } } }));
   const printed = "build started\nsee https://example.com/docs?a=1. for more, not file:///etc/passwd\nerror: one\nerror: two\nerror: three\n";
-  const outSid = omaterm("new", "-n", "out", "-d", procDir, "--", "sh", "-c", `printf '${printed}'; exec sleep 600`);
+  const outSid = omaterm("new", "-n", "build-logs", "-d", procDir, "--", "sh", "-c", `printf '${printed}'; exec sleep 600`);
   const outPane = JSON.parse(omaterm("ls", "--json")).find((s) => s.id === outSid).focus;
   const marked = `[...document.querySelectorAll(".bv-out mark.on")].map((m) => m.textContent).join("")`;
 
@@ -355,7 +355,18 @@ try {
     await waitFor("the output did not show", `document.querySelector(".bv-out")?.textContent.includes("error: three")`);
     const links = await evaluate(`JSON.stringify([...document.querySelectorAll(".bv-out a")].map((a) => [a.getAttribute("href"), a.textContent, a.target, a.rel]))`);
     if (links !== JSON.stringify([["https://example.com/docs?a=1", "https://example.com/docs?a=1", "_blank", "noopener noreferrer"]])) throw new Error(`the links are ${links}`);
+    await waitFor("the session's name did not show", `document.querySelector(".grip .t").textContent === "build-logs"`);
     await shot("output");
+  });
+  await check("output: the switch leaves a name of ten letters whole, at 360 px too", "", async () => {
+    for (const width of [360, 390]) {
+      await cdp("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 2, mobile: true });
+      await sleep(300);
+      if (width === 360) await shot("output-360");
+      if (await evaluate(`(() => { const t = document.querySelector(".grip .t"); return t.scrollWidth > t.clientWidth; })()`)) {
+        throw new Error(`at ${width} px the name is cut`);
+      }
+    }
   });
   await check("output: Find counts the hits, its case ignored, and jumps between them", "", async () => {
     await tap('.bv-btn[aria-label="Find"]');
