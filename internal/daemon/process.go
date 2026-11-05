@@ -56,7 +56,10 @@ func (r daemonRunner) Get(id string) session.Handle {
 	return p
 }
 
-func (r daemonRunner) Remove(id string) { r.d.endPane(id) }
+func (r daemonRunner) Remove(id string) {
+	r.d.keepOutput(id)
+	r.d.endPane(id)
+}
 
 // loadProcesses reads every project's process definitions, the omaterm.yml
 // ones first and the local ones from state.json after, and gives them to

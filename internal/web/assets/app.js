@@ -923,17 +923,18 @@ function showTerm(id) {
     },
   }, icon("compose", "s14"));
 
-  // The session's files and changes, read in the card in the terminal's
-  // place. One button opens them, as last seen; there, the header trades
-  // the terminal's status and Compose for a switch between the two, and a
-  // close that goes back to the terminal.
+  // The pane's output as text, and the session's files and changes, read
+  // in the card in the terminal's place. One button opens them, as last
+  // seen; there, the header trades the terminal's status and Compose for a
+  // switch between the three, and a close that goes back to the terminal.
   const paneHash = `#/pane/${encodeURIComponent(id)}`;
   const browseBtn = h("a", {
-    class: "ib btn-view btn-browse", href: paneHash + "/files", title: "Files and Changes", "aria-label": "Files and Changes",
+    class: "ib btn-view btn-browse", href: paneHash + "/files", title: "Output, Files and Changes", "aria-label": "Output, Files and Changes",
   }, icon("files", "s14"));
+  const segOutput = h("a", { href: paneHash + "/output" }, "Output");
   const segFiles = h("a", { href: paneHash + "/files" }, "Files");
   const segChanges = h("a", { href: paneHash + "/changes" }, "Changes");
-  const seg = h("nav", { class: "bv-seg", "aria-label": "Files or Changes" }, segFiles, segChanges);
+  const seg = h("nav", { class: "bv-seg", "aria-label": "Output, Files or Changes" }, segOutput, segFiles, segChanges);
   const closeBtn = h("a", {
     class: "ib btn-view btn-close", href: paneHash, title: "Back to the terminal", "aria-label": "Back to the terminal",
   }, icon("close", "s14"));
@@ -1033,7 +1034,12 @@ function showTerm(id) {
       if (ws !== sock || closed) return;
       ws = null;
       if (e.code === 4401) { showPair("This browser was signed out."); return; }
-      if (e.code === 4410) { setNote(e.reason); return; }
+      // A stopped process has no terminal: its last output shows instead.
+      if (e.code === 4410) {
+        setNote(e.reason);
+        if (!card.dataset.view) location.replace(paneHash + "/output");
+        return;
+      }
       if (e.code === 4404 || gone) { setNote(gone ? "This session has ended." : "This session is gone."); return; }
       setNote(welcomed ? "Reconnecting…" : "Connecting…");
       setTimeout(async () => {
@@ -1211,13 +1217,22 @@ function showTerm(id) {
     document.title = (waiting ? `(${waiting}) ` : "") + gripTitle.textContent + " · omaterm";
   };
 
-  // showView shows the files or changes view kind at path, or, with no
-  // kind, the terminal again.
+  // showView shows the output, files or changes view kind at path, or,
+  // with no kind, the terminal again.
   let browse = null;
   let lastStatus = "";
+  // ask takes a diff's line to Compose, over the terminal it goes to: back
+  // goes back to the diff.
+  const ask = (text) => {
+    if (!composeBox?.prefill) return;
+    history.pushState(null, "", paneHash);
+    showView("");
+    composeBox.prefill(text);
+  };
   const showView = (kind, path) => {
-    const group = { files: "files", file: "files", changes: "changes", diff: "changes" }[kind];
+    const group = { output: "output", files: "files", file: "files", changes: "changes", diff: "changes" }[kind];
     if (group) browseBtn.href = paneHash + "/" + group;
+    segOutput.classList.toggle("on", group === "output");
     segFiles.classList.toggle("on", group === "files");
     segChanges.classList.toggle("on", group === "changes");
     if (!kind) {
@@ -1229,7 +1244,7 @@ function showTerm(id) {
     xt.blur(); // the phone's keyboard goes away with the terminal
     loadBrowse().then((mod) => {
       if (!mod || closed || card.dataset.view !== kind) return;
-      browse ??= mod.mountBrowse(view, { id, api, h });
+      browse ??= mod.mountBrowse(view, { id, api, h, ask });
       browse.show(kind, path);
     });
   };
@@ -1262,11 +1277,11 @@ function showTerm(id) {
 // --- routes & start --------------------------------------------------------
 
 // route shows what the hash names: a pane, #/pane/<id>, or one of its
-// views, #/pane/<id>/files/<dir>, …/file/<path>, …/changes and
+// views, #/pane/<id>/output, …/files/<dir>, …/file/<path>, …/changes and
 // …/changes/<path> (a file's diff); else the list.
 function route() {
   if (!paired) return;
-  const m = location.hash.match(/^#\/pane\/([^/]+)(?:\/(files|file|changes)(?:\/(.+))?)?$/);
+  const m = location.hash.match(/^#\/pane\/([^/]+)(?:\/(output|files|file|changes)(?:\/(.+))?)?$/);
   if (!m) { showEmpty(); renderSidebar(); return; }
   showTerm(decodeURIComponent(m[1]));
   const path = m[3] ? decodeURIComponent(m[3]) : "";

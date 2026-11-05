@@ -100,6 +100,9 @@ type Daemon struct {
 	procMu       sync.Mutex
 	procProjects map[string]model.Project
 	procMtimes   map[string]fileStamp
+	// procOutput is each process session's last run's output, kept as its
+	// pane goes (see keepOutput).
+	procOutput map[string]keptOutput
 	// historyMu orders a pane's close against the writing of its
 	// scrollback, which reads it off the loop goroutine.
 	historyMu sync.Mutex
@@ -609,6 +612,11 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		json.Unmarshal(raw, &p)
 		pn, err := pane(p.ID)
 		if err != nil {
+			// A process's run that ended: its pane is gone, its last
+			// lines kept.
+			if text, ok := d.keptOutput(p.ID, p.Lines); ok {
+				return proto.ReadResult{Text: text}, nil
+			}
 			return nil, err
 		}
 		return proto.ReadResult{Text: pn.Text(p.Scrollback, p.Lines)}, nil

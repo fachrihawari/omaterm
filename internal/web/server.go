@@ -214,6 +214,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/panes/{id}/raw", s.auth(s.raw))
 	mux.HandleFunc("GET /api/panes/{id}/changes", s.auth(s.changes))
 	mux.HandleFunc("GET /api/panes/{id}/diff", s.auth(s.diff))
+	mux.HandleFunc("GET /api/panes/{id}/text", s.auth(s.text))
 	mux.HandleFunc("POST /api/panes/{id}/seen", s.auth(s.seen))
 	mux.HandleFunc("POST /api/logout", s.auth(s.logout))
 	mux.HandleFunc("GET /api/voice", s.auth(s.voiceStatus))

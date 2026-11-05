@@ -25,3 +25,10 @@ func AllowPushOrigin(origin string) (undo func()) {
 func DecryptPush(key *ecdh.PrivateKey, secret, body []byte) ([]byte, error) {
 	return decrypt(key, secret, body)
 }
+
+// SetMaxText caps the pane text the page reads at n bytes, until undone.
+func SetMaxText(n int) (undo func()) {
+	was := maxText
+	maxText = n
+	return func() { maxText = was }
+}
