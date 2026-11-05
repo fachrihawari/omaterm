@@ -401,6 +401,10 @@ the next key, twice to hold it until you tap it again. **Edit** chooses which
 keys the bar has, and in what order; omaterm keeps that for each browser. The
 **compose** button opens a box for writing a prompt with the phone's own
 keyboard: **Send** pastes it and presses Enter, **Insert** only pastes it.
+**Recent** brings back what you sent before, and **When free** lines a prompt
+up for an agent that is still working: omaterm types it in once the agent is
+back at its prompt, and you can cancel it until then. Coming back to the page
+after the phone was locked, or on another network, reconnects on its own.
 Keys reach the program as it asked for them, so Ctrl+Enter and Shift+Tab work
 in agents that take them.
 
