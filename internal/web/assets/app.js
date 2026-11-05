@@ -609,7 +609,7 @@ function renderSidebar() {
   footElements.push(h("button", {
     class: "link", title: "Sign out this browser",
     onclick: async () => { if (confirm("Sign out this browser?")) { await push?.forget(); await api("/api/logout", {}); showPair(); } },
-  }, icon("signout", "s12"), "Sign out"));
+  }, icon("signout", "s12"), h("span", { class: "lbl" }, "Sign out")));
 
   foot.replaceChildren(...footElements);
 }
@@ -710,7 +710,8 @@ function processRow(s, proj, open) {
       title: link, onclick: (e) => e.stopPropagation(),
     }, linkHost(link));
   } else if (local) {
-    pill = h("span", { class: "pill mono", title: "Opens on the computer only" }, `${local} · on the computer`);
+    pill = h("span", { class: "pill mono", title: "Opens on the computer only" },
+      local, h("span", { class: "where" }, " · on the computer"));
   }
 
   let statusEl = null;
