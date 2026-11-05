@@ -47,8 +47,15 @@ echo "2026-11-05T10:00:01Z INF Registered tunnel connection connIndex=0 location
 exec /bin/sleep 300`
 
 // fakeTailscale answers status from a file and logs what it is told to
-// serve, exiting 0 as --bg does.
-const fakeTailscale = `if [ "$1" = status ]; then
+// serve, exiting 0 as --bg does. TS_FUNNEL_OFF has funnel print the link
+// that turns Funnel on, and then wait for it ("wait") or end ("exit"), as
+// Tailscale does when the tailnet hasn't turned it on.
+const fakeTailscale = `if [ "$1" = funnel ] && [ "$2" = --bg ] && [ -n "$TS_FUNNEL_OFF" ]; then
+	printf '\nFunnel is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/funnel?node=nABC123\n\n'
+	if [ "$TS_FUNNEL_OFF" = wait ]; then exec /bin/sleep 300; fi
+	exit 0
+fi
+if [ "$1" = status ]; then
 	printf '%s' "$TS_STATUS"
 	exit 0
 fi
@@ -223,6 +230,9 @@ func TestTailscaleSignedOut(t *testing.T) {
 	if why := Available()[Tailscale]; why != "Tailscale is signed out" {
 		t.Fatalf("Available: %q", why)
 	}
+	if why := Available()[Funnel]; why != "Tailscale is signed out" {
+		t.Fatalf("Available, Funnel: %q", why)
+	}
 	if b, err := os.ReadFile(filepath.Join(dir, "tailscale.log")); err == nil && len(b) > 0 {
 		t.Fatal("tailscale served while signed out")
 	}
@@ -239,6 +249,9 @@ func TestTailscaleNotInstalled(t *testing.T) {
 	if why := Available()[Tailscale]; why != "tailscale is not installed" {
 		t.Fatalf("Available: %q", why)
 	}
+	if why := Available()[Funnel]; why != "tailscale is not installed" {
+		t.Fatalf("Available, Funnel: %q", why)
+	}
 }
 
 // Both providers in place, Available says nothing stands in the way.
@@ -246,7 +259,7 @@ func TestAvailable(t *testing.T) {
 	tunnelTest(t)
 	fakePATH(t, map[string]string{"cloudflared": fakeCloudflared, "tailscale": fakeTailscale})
 	why := Available()
-	if why[Cloudflare] != "" || why[Tailscale] != "" {
+	if why[Cloudflare] != "" || why[Tailscale] != "" || why[Funnel] != "" {
 		t.Fatalf("available: %+v", why)
 	}
 }
@@ -422,5 +435,107 @@ exit 1`})
 	}
 	if strings.Contains(err.Error(), testToken) {
 		t.Fatalf("the error says the token: %v", err)
+	}
+}
+
+// Funnel serves in the background on the tailnet name, open to the
+// internet, and is turned off as a funnel.
+func TestFunnelTunnel(t *testing.T) {
+	dir := tunnelTest(t)
+	fakePATH(t, map[string]string{"tailscale": fakeTailscale})
+	tun, err := Start(context.Background(), Spec{Provider: Funnel, Target: "http://127.0.0.1:7370", Name: "web access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tun.URL(); got != "https://box.tailnet.ts.net" {
+		t.Fatalf("URL %q", got)
+	}
+	if err := tun.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	served, _ := os.ReadFile(filepath.Join(dir, "tailscale.log"))
+	want := "funnel --bg --https=443 http://127.0.0.1:7370\nfunnel --https=443 off\n"
+	if string(served) != want {
+		t.Fatalf("tailscale ran %q, want %q", served, want)
+	}
+}
+
+// Funnel takes 443, 8443 and 10000 alone: another port is refused before
+// tailscale is told anything.
+func TestFunnelPorts(t *testing.T) {
+	dir := tunnelTest(t)
+	fakePATH(t, map[string]string{"tailscale": fakeTailscale})
+	tun, err := Start(context.Background(), Spec{Provider: Funnel, Target: "http://127.0.0.1:7370", Port: 8443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tun.URL(); got != "https://box.tailnet.ts.net:8443" {
+		t.Fatalf("URL %q", got)
+	}
+	tun.Stop()
+	os.Remove(filepath.Join(dir, "tailscale.log"))
+	for _, port := range []int{8080, 9443, 10001} {
+		_, err := Start(context.Background(), Spec{Provider: Funnel, Target: "http://127.0.0.1:7370", Port: port})
+		if err == nil || !strings.Contains(err.Error(), "443, 8443 or 10000") {
+			t.Fatalf("port %d: %v", port, err)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "tailscale.log")); len(b) != 0 {
+		t.Fatalf("tailscale was told to serve: %q", b)
+	}
+}
+
+// A tailnet without Funnel turned on has tailscale print the link that
+// turns it on, and wait for the user, or end. Start ends it at once and
+// fails with the link, rather than waiting out the serve's 30 seconds.
+func TestFunnelNotTurnedOn(t *testing.T) {
+	for _, mode := range []string{"wait", "exit"} {
+		t.Run(mode, func(t *testing.T) {
+			tunnelTest(t)
+			t.Setenv("TS_FUNNEL_OFF", mode)
+			fakePATH(t, map[string]string{"tailscale": fakeTailscale})
+			began := time.Now()
+			tun, err := Start(context.Background(), Spec{Provider: Funnel, Target: "http://127.0.0.1:7370"})
+			if err == nil {
+				tun.Stop()
+				t.Fatal("a funnel the tailnet hasn't turned on started")
+			}
+			if took := time.Since(began); took > 5*time.Second {
+				t.Fatalf("it took %s to fail", took)
+			}
+			want := "Turn on Funnel for this tailnet: https://login.tailscale.com/f/funnel?node=nABC123"
+			if err.Error() != want {
+				t.Fatalf("error %q, want %q", err, want)
+			}
+			if got := EnableLink(err.Error()); got != "https://login.tailscale.com/f/funnel?node=nABC123" {
+				t.Fatalf("EnableLink: %q", got)
+			}
+		})
+	}
+}
+
+// tailscale serve without HTTPS turned on prints its own link, and is
+// said so too.
+func TestServeHTTPSNotTurnedOn(t *testing.T) {
+	tunnelTest(t)
+	fakePATH(t, map[string]string{"tailscale": `if [ "$1" = status ]; then printf '%s' "$TS_STATUS"; exit 0; fi
+if [ "$2" = status ]; then printf '{}'; exit 0; fi
+echo "To enable, visit: https://login.tailscale.com/f/serve?node=nABC123"
+exec /bin/sleep 300`})
+	_, err := Start(context.Background(), Spec{Provider: Tailscale, Target: "http://127.0.0.1:7370"})
+	if err == nil || err.Error() != "Turn on HTTPS for this tailnet: https://login.tailscale.com/f/serve?node=nABC123" {
+		t.Fatalf("error %v", err)
+	}
+}
+
+func TestEnableLink(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"Turn on Funnel for this tailnet: https://login.tailscale.com/f/funnel?node=n1", "https://login.tailscale.com/f/funnel?node=n1"},
+		{"tailscale serve: exit status 1", ""},
+		{"see https://login.tailscale.com/admin", ""},
+	} {
+		if got := EnableLink(tc.in); got != tc.want {
+			t.Errorf("EnableLink(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

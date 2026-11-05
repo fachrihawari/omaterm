@@ -1,5 +1,6 @@
 // Package tunnel reaches a local address from elsewhere through a tunnel
-// the user already has: Tailscale (their own devices, on their tailnet) or
+// the user already has: Tailscale (their own devices, on their tailnet),
+// Tailscale Funnel (a public https URL on this machine's tailnet name), or
 // Cloudflare (a public https URL: a quick tunnel's, new each time it
 // starts, or the user's own domain through a tunnel they made). omaterm
 // runs the tunnel's command itself, reads the URL it gets, and stops it.
@@ -18,6 +19,7 @@ type Provider string
 
 const (
 	Tailscale  Provider = "tailscale"  // tailscale serve: the tailnet only
+	Funnel     Provider = "funnel"     // tailscale funnel: public
 	Cloudflare Provider = "cloudflare" // cloudflared: public
 )
 
@@ -30,7 +32,8 @@ type Spec struct {
 	// "shop".
 	Name string
 	// Port is the https port Tailscale serves it on: 0 is 443. A share
-	// takes another (8443, 10000…), as web access may hold 443.
+	// takes another (8443, 10000…), as web access may hold 443. Funnel
+	// takes only 443, 8443 and 10000.
 	Port int
 	// Token is a Cloudflare named tunnel's, which the user made in
 	// Cloudflare's dashboard to reach Target at Hostname: empty for a
@@ -69,7 +72,7 @@ func Start(ctx context.Context, s Spec) (Tunnel, error) {
 	switch s.Provider {
 	case Cloudflare:
 		return startCloudflare(ctx, s)
-	case Tailscale:
+	case Tailscale, Funnel:
 		return startTailscale(ctx, s)
 	}
 	return nil, fmt.Errorf("tunnel: unknown provider %q", s.Provider)
@@ -79,8 +82,10 @@ func Start(ctx context.Context, s Spec) (Tunnel, error) {
 // it can. Each answer runs a command of its own, so ask once and keep
 // the answer, not in a loop.
 func Available() map[Provider]string {
+	ts := whyNotTailscale()
 	return map[Provider]string{
 		Cloudflare: whyNotCloudflare(),
-		Tailscale:  whyNotTailscale(),
+		Tailscale:  ts,
+		Funnel:     ts, // Funnel not turned on is said when it starts
 	}
 }
