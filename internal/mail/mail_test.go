@@ -352,3 +352,62 @@ func TestHeldForADialog(t *testing.T) {
 	}
 	w.eventually("delivered at the prompt", func() bool { return strings.Contains(read(log), "Hi") })
 }
+
+// A message its agent wasn't given yet can be taken back, by its asker or
+// by a command outside omaterm, and whoever waits for its answer is told;
+// one typed in already can't.
+func TestCancel(t *testing.T) {
+	w := newWorld(t)
+	w.start("a", []string{"sleep", "30"})
+	w.start("b", []string{"sleep", "30"})
+	m, err := w.box.Ask(proto.MailAskParams{From: "a", To: "b", ToName: "w1", Text: "Fix it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan proto.Mail, 1)
+	go func() {
+		got, _ := w.box.Await(context.Background(), m.ID)
+		done <- got
+	}()
+	if _, err := w.box.Cancel(proto.MailCancelParams{ID: m.ID, From: "b"}); err == nil {
+		t.Error("cancelled by a pane that didn't ask it")
+	}
+	if _, err := w.box.Cancel(proto.MailCancelParams{ID: m.ID, From: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.State != proto.MailFailed || got.Why != "it was cancelled" {
+			t.Fatalf("the asker got %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the wait didn't end")
+	}
+	if _, err := w.box.Cancel(proto.MailCancelParams{ID: m.ID}); err == nil || !strings.Contains(err.Error(), "wasn't delivered: it was cancelled") {
+		t.Errorf("cancelled twice: %v", err)
+	}
+	if _, err := w.box.Cancel(proto.MailCancelParams{ID: "m99"}); err == nil {
+		t.Error("cancelled a message there isn't")
+	}
+
+	n, _ := w.box.Ask(proto.MailAskParams{To: "b", Text: "Later", Note: true})
+	w.box.Tick(time.Now())
+	if info := w.reg.Get("b").Info(); info.Inbox != 1 {
+		t.Fatalf("the pane shows %d held", info.Inbox)
+	}
+	if _, err := w.box.Cancel(proto.MailCancelParams{ID: n.ID}); err != nil {
+		t.Fatal(err)
+	}
+	w.box.Tick(time.Now())
+	if info := w.reg.Get("b").Info(); info.Inbox != 0 {
+		t.Fatalf("the pane still shows %d held", info.Inbox)
+	}
+
+	log := w.agent("c")
+	typed, _ := w.box.Ask(proto.MailAskParams{To: "c", Text: "Go on", Note: true})
+	w.eventually("the note typed", func() bool { return strings.Contains(read(log), "Go on") })
+	w.eventually("the note delivered", func() bool { return w.mail(typed.ID).State == proto.MailDelivered })
+	if _, err := w.box.Cancel(proto.MailCancelParams{ID: typed.ID}); err == nil || !strings.Contains(err.Error(), "typed in already") {
+		t.Errorf("cancelled a note typed in: %v", err)
+	}
+}

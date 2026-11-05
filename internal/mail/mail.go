@@ -296,6 +296,28 @@ func (m *Mailbox) Reply(p proto.MailReplyParams) (proto.Mail, error) {
 	return it.Mail, nil
 }
 
+// Cancel takes back a message its agent wasn't given yet: it goes to
+// nobody, and its asker is told it wasn't delivered. With a From, only
+// one that pane asked.
+func (m *Mailbox) Cancel(p proto.MailCancelParams) (proto.Mail, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	it := m.find(p.ID)
+	switch {
+	case it == nil:
+		return proto.Mail{}, proto.Errorf(proto.CodeNotFound, "no message "+p.ID)
+	case p.From != "" && it.From != p.From:
+		return proto.Mail{}, proto.Errorf(proto.CodeUsage, it.ID+" isn't yours")
+	case it.State == proto.MailFailed:
+		return proto.Mail{}, proto.Errorf(proto.CodeUsage, it.ID+" wasn't delivered: "+it.Why)
+	case it.sending || it.State != proto.MailQueued:
+		return proto.Mail{}, proto.Errorf(proto.CodeUsage, it.ID+" was typed in already")
+	}
+	it.State, it.Why = proto.MailFailed, "it was cancelled"
+	m.changedLocked()
+	return it.Mail, nil
+}
+
 // List lists the messages to and from pane, every one for "".
 func (m *Mailbox) List(pane string) []proto.Mail {
 	m.mu.Lock()
@@ -545,6 +567,12 @@ func (m *Mailbox) Serve(ctx context.Context, method string, raw json.RawMessage)
 			return nil, err
 		}
 		return m.List(p.Pane), nil
+	case "mail.cancel":
+		var p proto.MailCancelParams
+		if err := decode(&p); err != nil {
+			return nil, err
+		}
+		return m.Cancel(p)
 	}
 	return nil, proto.Errorf(proto.CodeUsage, "no method "+method)
 }

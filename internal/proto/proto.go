@@ -334,6 +334,13 @@ type MailListParams struct {
 	Pane string `json:"pane,omitempty"`
 }
 
+// MailCancelParams take back a message not yet typed in (mail.cancel):
+// one From asked, or any for none.
+type MailCancelParams struct {
+	ID   string `json:"id"`
+	From string `json:"from,omitempty"`
+}
+
 // MergeParams merge the worktree of session Target into the branch of
 // pane By's session (worktree.merge): squashed, unless Commit; its
 // worktree and session removed after, unless Keep.
