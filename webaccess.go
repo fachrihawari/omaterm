@@ -65,7 +65,7 @@ func (a *appState) setWebNetwork(c *ui.Context, on bool) {
 }
 
 // setWebTunnel picks how omaterm carries web access beyond this machine,
-// turning it on: "" for no tunnel, "tailscale" or "cloudflare".
+// turning it on: "" for no tunnel, "tailscale", "funnel" or "cloudflare".
 func (a *appState) setWebTunnel(c *ui.Context, provider string) {
 	if provider != "" && !a.webAvailable() {
 		toast(c, "Web access needs the session daemon, which is off")
