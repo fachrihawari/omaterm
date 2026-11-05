@@ -81,6 +81,10 @@ var (
 	errUploadsFull = errors.New("the photos sent today fill omaterm's room for them: try again once older ones go, in a day")
 )
 
+// decoding lets two pictures be decoded and encoded again at once: each
+// may take some 64 MB while it is.
+var decoding = make(chan struct{}, 2)
+
 // upload keeps the photo the page sends for the pane, and answers its
 // path.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
@@ -107,6 +111,8 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	decoding <- struct{}{}
+	defer func() { <-decoding }()
 	img, format, err := decodeUpload(b)
 	switch {
 	case errors.Is(err, errTooManyPx):
