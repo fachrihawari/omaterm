@@ -7,6 +7,9 @@
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],
+  "linux": {
+    "command": "omaterm"
+  },
   "macos": {
     "minimumSystemVersion": "13.0",
     "infoPlist": {
