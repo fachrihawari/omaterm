@@ -180,6 +180,7 @@ function showPair(message = "") {
   closeTerm();
   if (events) { events.onclose = null; events.close(); events = null; }
   clearTimeout(eventsTimer);
+  forget(); // after the terminal, whose compose box keeps its draft as it goes
   document.title = "omaterm";
 
   const input = h("input", {
@@ -273,6 +274,16 @@ function wake() {
 document.addEventListener("visibilitychange", wake);
 addEventListener("online", wake);
 addEventListener("pageshow", (e) => { if (e.persisted) wake(); });
+
+// forget wipes what the phone keeps of omaterm as it is signed out: the
+// compose drafts and Recent prompts. Its look and key bar stay.
+function forget() {
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith("omaterm.") && !/^omaterm\.(theme|keybar)$/.test(k)) localStorage.removeItem(k);
+    }
+  } catch {}
+}
 
 function wsURL(path) {
   return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + path;

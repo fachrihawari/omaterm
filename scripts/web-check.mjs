@@ -21,11 +21,12 @@
 // view is saved there as a PNG.
 //
 // So is the connection: the phone's keyboard, opening, keeps the pane's
-// size and lifts the cursor into sight; and a socket that died without a
-// word (a proxy in front of the page stops passing anything on) is dropped
-// as the page comes back, and the terminal reconnects. And Compose's
-// Recent puts a sent prompt back, and When free lines one up for a fake
-// agent that works on and on, and takes it back.
+// size and lifts the cursor into sight; a socket that died without a word
+// (a proxy in front of the page stops passing anything on) is dropped as
+// the page comes back, and the terminal reconnects; and signing out wipes
+// the drafts and Recent. And Compose's Recent puts a sent prompt back,
+// and When free lines one up for a fake agent that works on and on, and
+// takes it back.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -488,6 +489,23 @@ try {
       await waitFor("the header still says it reconnects", `${header} !== "Reconnecting…"`);
       await sleep(500);
       await key("b", "KeyB", "b");
+    });
+    await check("sign out wipes the drafts and Recent, and keeps the look", hex("bye\r"), async () => {
+      await typeInBox("bye");
+      await tap(".compose-send");
+      await sleep(300);
+      await typeInBox("a draft");
+      await tap(".compose-close");
+      const keys = `Object.keys(localStorage).filter((k) => k.startsWith("omaterm.")).sort().join(" ")`;
+      const before = await evaluate(keys);
+      if (!before.includes("omaterm.compose.recent") || !before.includes(`omaterm.compose:${pane}`)) throw new Error(`the phone keeps ${before}`);
+      await evaluate(`window.confirm = () => true; location.hash = ""`);
+      await waitFor("the list doesn't show", `document.querySelector(".shell")?.dataset.view === "list"`);
+      await sleep(500);
+      await tap(".side-f .link", "Sign out");
+      await waitFor("no pairing page", `Boolean(document.querySelector(".pair"))`);
+      const after = await evaluate(keys);
+      if (after !== "omaterm.theme") throw new Error(`signed out, the phone keeps ${after}`);
     });
   } finally {
     proxy.close();
