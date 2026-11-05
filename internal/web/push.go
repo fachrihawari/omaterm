@@ -46,6 +46,10 @@ type Subscription struct {
 	// Words lets the agent's own words show: without it a notification
 	// says only the session and its state, all a lock screen then shows.
 	Words bool `json:"words,omitempty"`
+	// Programs lets programs' own notifications (OSC 9, 777) come too:
+	// without it only omaterm's own do, so an agent that sends one as it
+	// waits doesn't buzz the phone twice.
+	Programs bool `json:"programs,omitempty"`
 }
 
 // Notice is what the phones are told of a session; Server.Push sends it.
@@ -64,7 +68,8 @@ type Notice struct {
 	// to a device that asked for them.
 	Words string
 	// Program marks a program's own notification (OSC 9, 777), which any
-	// program in a pane can send: it never replaces omaterm's.
+	// program in a pane can send: it never replaces omaterm's, and goes
+	// only to a device that asked for programs'.
 	Program bool
 	// Urgent asks the push service to wake the phone: for a session that
 	// waits for the user, or failed.
@@ -460,7 +465,7 @@ func (p *pusher) fanOut(job pushJob) {
 	m.Write([]byte("omaterm push topic"))
 	tag := topic(m.Sum(nil), kind, n.Session)
 	for _, d := range devices {
-		if job.device != "" && d.ID != job.device || !p.allow(d.ID) {
+		if job.device != "" && d.ID != job.device || n.Program && !d.Push.Programs || !p.allow(d.ID) {
 			continue
 		}
 		p.send(key, d, n, tag)
@@ -583,15 +588,16 @@ func (s *Server) pushStatus(w http.ResponseWriter, r *http.Request) {
 	d := r.Context().Value(deviceKey{}).(Device)
 	st := map[string]any{"key": b64.EncodeToString(pub), "on": d.Push != nil}
 	if d.Push != nil {
-		st["endpoint"], st["words"] = d.Push.Endpoint, d.Push.Words
+		st["endpoint"], st["words"], st["programs"] = d.Push.Endpoint, d.Push.Words, d.Push.Programs
 	}
 	writeJSON(w, st)
 }
 
 // subscribe turns this device's notifications on, with the subscription
-// its browser made: one a device, the new in place of the old. Words,
-// when given, says whether the agent's words show; else it stays as it
-// was. The first time, a notification says they are on.
+// its browser made: one a device, the new in place of the old. Words and
+// programs, when given, say whether the agent's words show and programs'
+// notifications come; else they stay as they were. The first time, a
+// notification says they are on.
 func (s *Server) subscribe(w http.ResponseWriter, r *http.Request) {
 	var p struct {
 		Subscription struct {
@@ -601,7 +607,8 @@ func (s *Server) subscribe(w http.ResponseWriter, r *http.Request) {
 				Auth   string `json:"auth"`
 			} `json:"keys"`
 		} `json:"subscription"`
-		Words *bool `json:"words"`
+		Words    *bool `json:"words"`
+		Programs *bool `json:"programs"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&p); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -610,10 +617,13 @@ func (s *Server) subscribe(w http.ResponseWriter, r *http.Request) {
 	d := r.Context().Value(deviceKey{}).(Device)
 	sub := Subscription{Endpoint: p.Subscription.Endpoint, P256dh: p.Subscription.Keys.P256dh, Auth: p.Subscription.Keys.Auth}
 	if d.Push != nil {
-		sub.Words = d.Push.Words
+		sub.Words, sub.Programs = d.Push.Words, d.Push.Programs
 	}
 	if p.Words != nil {
 		sub.Words = *p.Words
+	}
+	if p.Programs != nil {
+		sub.Programs = *p.Programs
 	}
 	if err := checkSubscription(sub); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -626,7 +636,7 @@ func (s *Server) subscribe(w http.ResponseWriter, r *http.Request) {
 	if d.Push == nil || d.Push.Endpoint != sub.Endpoint {
 		s.pusher().add(pushJob{device: d.ID, n: Notice{Title: "omaterm", State: "Notifications are on for this phone"}})
 	}
-	writeJSON(w, map[string]any{"on": true, "words": sub.Words})
+	writeJSON(w, map[string]any{"on": true, "words": sub.Words, "programs": sub.Programs})
 }
 
 // unsubscribe turns this device's notifications off.

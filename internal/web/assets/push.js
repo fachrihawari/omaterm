@@ -1,6 +1,6 @@
 // Notifications on this phone: a bell in the list's footer opens a sheet
 // that turns Web Push on and off (push.go, sw.js), lets the agent's words
-// show, and says why it can't when it can't. It also badges the
+// show and programs' own notifications come, and says why it can't when it can't. It also badges the
 // home-screen app's icon with the sessions waiting.
 //
 //   import { mountPush } from "./push.js";
@@ -50,7 +50,7 @@ function sameKey(buf, b64) {
 }
 
 export function mountPush({ api, h }) {
-  let st = { on: false, words: false };
+  let st = { on: false, words: false, programs: false };
   let note = "";
   let busy = false;
   let sheet = null;
@@ -138,12 +138,13 @@ export function mountPush({ api, h }) {
     }
   }
 
-  async function setWords(words) {
+  // setOption changes what comes: { words } or { programs }.
+  async function setOption(option) {
     setBusy(true);
     try {
       const sub = await subscription();
       if (!sub) throw new Error("this browser has no subscription");
-      Object.assign(st, await api("/api/push", { subscription: sub.toJSON(), words }));
+      Object.assign(st, await api("/api/push", { subscription: sub.toJSON(), ...option }));
     } catch (err) {
       note = "Couldn't change that: " + err.message;
     } finally {
@@ -174,12 +175,15 @@ export function mountPush({ api, h }) {
     const words = toggle("Show what the agent says",
       "Off, only the session and what happened show, as “Needs permission”. On, the agent's words show too, lock screen included.", "push-words");
     notify.input.addEventListener("change", () => (notify.input.checked ? turnOn() : turnOff()));
-    words.input.addEventListener("change", () => setWords(words.input.checked));
+    const programs = toggle("Programs' own notifications",
+      "What a program in a session sends itself, as a build that finished. Off, only omaterm's own come.", "push-programs");
+    words.input.addEventListener("change", () => setOption({ words: words.input.checked }));
+    programs.input.addEventListener("change", () => setOption({ programs: programs.input.checked }));
     const msg = h("p", { class: "push-note", role: "status" });
     const close = h("button", { class: "push-close ib", type: "button", "aria-label": "Close", html: CLOSE, onclick: () => shut() });
     const panel = h("div", { class: "push-panel" },
       h("div", { class: "push-head" }, h("h2", { id: "push-title" }, "Notifications"), close),
-      notify.row, words.row, msg,
+      notify.row, words.row, programs.row, msg,
     );
     const el = h("div", { class: "push-sheet", role: "dialog", "aria-modal": "true", "aria-labelledby": "push-title" },
       h("div", { class: "push-backdrop", onclick: () => shut() }),
@@ -187,7 +191,7 @@ export function mountPush({ api, h }) {
     );
     const onKey = (e) => { if (e.key === "Escape") shut(); };
     document.addEventListener("keydown", onKey);
-    sheet = { el, notify: notify.input, words: words.input, msg, onKey };
+    sheet = { el, notify: notify.input, words: words.input, programs: programs.input, msg, onKey };
     if (!note) note = why();
     document.body.append(el);
     draw();
@@ -217,9 +221,11 @@ export function mountPush({ api, h }) {
     if (!busy) {
       sheet.notify.checked = on;
       sheet.words.checked = on && Boolean(st.words);
+      sheet.programs.checked = on && Boolean(st.programs);
     }
     sheet.notify.disabled = !can || busy;
     sheet.words.disabled = !on || busy;
+    sheet.programs.disabled = !on || busy;
     sheet.msg.textContent = note;
     sheet.msg.hidden = !note;
   }

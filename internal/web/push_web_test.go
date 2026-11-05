@@ -74,13 +74,14 @@ func newPushBrowser(endpoint string) pushBrowser {
 	return pushBrowser{key, secret, endpoint}
 }
 
-// body is what the page posts to /api/push, words "" leaving them be.
-func (b pushBrowser) body(words string) string {
+// body is what the page posts to /api/push, with options after the
+// subscription, as `"words":true`.
+func (b pushBrowser) body(options string) string {
 	enc := base64.RawURLEncoding
 	s := `{"subscription":{"endpoint":"` + b.endpoint + `","expirationTime":null,"keys":{"p256dh":"` +
 		enc.EncodeToString(b.key.PublicKey().Bytes()) + `","auth":"` + enc.EncodeToString(b.secret) + `"}}`
-	if words != "" {
-		s += `,"words":` + words
+	if options != "" {
+		s += "," + options
 	}
 	return s + "}"
 }
@@ -112,8 +113,8 @@ func (f *fixture) do(t *testing.T, c *http.Client, method, path, body string) *h
 
 // pushKey is GET /api/push/key.
 func (f *fixture) pushKey(t *testing.T, c *http.Client) (st struct {
-	Key, Endpoint string
-	On, Words     bool
+	Key, Endpoint       string
+	On, Words, Programs bool
 }) {
 	t.Helper()
 	res, err := c.Get(f.base + "/api/push/key")
@@ -124,12 +125,13 @@ func (f *fixture) pushKey(t *testing.T, c *http.Client) (st struct {
 	return st
 }
 
-// startBlocked runs an agent in session sid that comes to wait for
-// permission to deploy.
-func (f *fixture) startBlocked(t *testing.T, pane, sid string) {
+// blocked is an agent that comes to wait for permission to deploy.
+var blocked = `printf '\033]7501;state=working\007'; sleep 0.3; printf '\033]7501;state=blocked:kind=permission:msg=` +
+	base64.StdEncoding.EncodeToString([]byte("Approve deploy?")) + `\033\\'; sleep 30`
+
+// start runs script in a pane of session sid.
+func (f *fixture) start(t *testing.T, pane, sid, script string) {
 	t.Helper()
-	msg := base64.StdEncoding.EncodeToString([]byte("Approve deploy?"))
-	script := `printf '\033]7501;state=working\007'; sleep 0.3; printf '\033]7501;state=blocked:kind=permission:msg=` + msg + `\033\\'; sleep 30`
 	params, _ := json.Marshal(daemon.StartParams{ID: pane, Session: sid, Project: "p1", Command: []string{"sh", "-c", script}, Exec: true, Cols: 80, Rows: 24})
 	if _, err := f.d.Handle(context.Background(), "pane.start", params); err != nil {
 		t.Fatal(err)
@@ -138,15 +140,15 @@ func (f *fixture) startBlocked(t *testing.T, pane, sid string) {
 
 // A phone that turned notifications on gets one, encrypted for it and
 // signed, when an agent needs permission: by default only the session and
-// its state, the agent's words once it asks for them. A subscription the
-// push service has forgotten is dropped, and only a push service is
-// posted to.
+// its state, the agent's words once it asks for them, and programs' own
+// notifications only once it asks for those. A subscription the push
+// service has forgotten is dropped, and only a push service is posted to.
 func TestWebPush(t *testing.T) {
 	fake := newFakePush(t)
 	t.Cleanup(web.AllowPushOrigin(fake.url))
 	f := newFixture(t, func(o *daemon.Options) {
 		st := model.State{Version: model.Version, Projects: []model.Project{{ID: "p1", Name: "web", Dir: t.TempDir()}}}
-		for _, s := range [][2]string{{"s1", "deploy"}, {"s2", "review"}, {"s3", "docs"}} {
+		for _, s := range [][2]string{{"s1", "deploy"}, {"s2", "review"}, {"s3", "docs"}, {"s4", "tests"}, {"s5", "lint"}} {
 			st.Sessions = append(st.Sessions, model.Session{ID: s[0], Project: "p1", Name: s[1],
 				Layout: &model.Layout{Pane: "a" + s[0][1:]}, Panes: []model.Pane{{ID: "a" + s[0][1:]}}})
 		}
@@ -179,7 +181,7 @@ func TestWebPush(t *testing.T) {
 		t.Fatalf("signed with another key: %s", got.header.Get("Authorization"))
 	}
 
-	f.startBlocked(t, "a1", "s1")
+	f.start(t, "a1", "s1", blocked)
 	got = fake.next(t)
 	h := got.header
 	if got.path != "/sub/1" || h.Get("Content-Encoding") != "aes128gcm" || h.Get("Urgency") != "high" ||
@@ -193,20 +195,37 @@ func TestWebPush(t *testing.T) {
 
 	// The agent's words, asked for; the same subscription isn't announced
 	// again.
-	if res := f.do(t, c, "POST", "/api/push", phone.body("true")); res.StatusCode != 200 {
+	if res := f.do(t, c, "POST", "/api/push", phone.body(`"words":true`)); res.StatusCode != 200 {
 		t.Fatalf("words: %s", res.Status)
 	}
-	if st := f.pushKey(t, c); !st.On || !st.Words || st.Endpoint != phone.endpoint {
+	if st := f.pushKey(t, c); !st.On || !st.Words || st.Programs || st.Endpoint != phone.endpoint {
 		t.Fatalf("after words: %+v", st)
 	}
-	f.startBlocked(t, "a2", "s2")
+	f.start(t, "a2", "s2", blocked)
 	if p := phone.open(t, fake.next(t)); p["title"] != "review · web" || p["body"] != "Needs permission: Approve deploy?" || p["waiting"] != 2.0 {
 		t.Fatalf("payload with words %v", p)
 	}
 
+	// A program's own notification goes only to a device that asked for
+	// them: an agent that sends one as it waits buzzes the phone once.
+	f.start(t, "a4", "s4", `printf '\033]9;Build finished\007'; `+blocked)
+	if p := phone.open(t, fake.next(t)); p["title"] != "tests · web" || p["body"] != "Needs permission: Approve deploy?" {
+		t.Fatalf("a program's notification came unasked: %v", p)
+	}
+	if res := f.do(t, c, "POST", "/api/push", phone.body(`"programs":true`)); res.StatusCode != 200 {
+		t.Fatalf("programs: %s", res.Status)
+	}
+	if st := f.pushKey(t, c); !st.Programs || !st.Words {
+		t.Fatalf("after programs: %+v", st)
+	}
+	f.start(t, "a5", "s5", `printf '\033]9;Build finished\007'; sleep 30`)
+	if p := phone.open(t, fake.next(t)); p["title"] != "lint · web" || p["body"] != "Sent a notification: Build finished" {
+		t.Fatalf("a program's notification %v", p)
+	}
+
 	// Gone from the push service, gone from omaterm.
 	fake.status.Store(http.StatusGone)
-	f.startBlocked(t, "a3", "s3")
+	f.start(t, "a3", "s3", blocked)
 	fake.next(t)
 	for deadline := time.Now().Add(5 * time.Second); f.pushKey(t, c).On; time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {

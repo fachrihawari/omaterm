@@ -352,8 +352,11 @@ try {
     await shot("push-list");
     await tap(".side-f .bell");
     await waitFor("the bell opened no sheet", `Boolean(document.querySelector(".push-sheet .push-on"))`);
-    const st = await evaluate(`[document.querySelector(".push-on").disabled, document.querySelector(".push-words").disabled, document.querySelector(".push-note").hidden]`);
-    if (st.join() !== "false,true,true") throw new Error(`notify disabled, words disabled, note hidden: ${st}`);
+    const st = await evaluate(`[".push-on", ".push-words", ".push-programs"].map((s) => document.querySelector(s))
+      .map((e) => e.disabled + "/" + e.checked).concat(document.querySelector(".push-note").hidden)`);
+    if (st.join() !== "false/false,true/false,true/false,true") {
+      throw new Error(`notify, words and programs disabled/checked, then the note hidden: ${st}`);
+    }
     await sleep(300);
     await shot("push-sheet");
     await tap(".push-close");

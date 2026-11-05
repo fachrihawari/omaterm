@@ -98,8 +98,9 @@ func (d *Daemon) pushStatus(info session.Info, prevStatus session.Status) {
 }
 
 // pushProgram passes on a program's own notification (OSC 9, 777) when
-// the settings let programs notify. Any program in a pane can send one,
-// so it comes under its session's name, and never in omaterm's place.
+// the settings let programs notify; only a device that asked for them
+// takes it. Any program in a pane can send one, so it comes under its
+// session's name, and never in omaterm's place.
 func (d *Daemon) pushProgram(paneID, title, body string) {
 	if !d.pushing() || !d.notifyPrefs().Programs {
 		return
