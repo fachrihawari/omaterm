@@ -9,3 +9,6 @@ func SetCreateWait(d time.Duration) (undo func()) {
 	createWait = d
 	return func() { createWait = was }
 }
+
+// SweepUploads is sweepUploads, for tests.
+var SweepUploads = sweepUploads

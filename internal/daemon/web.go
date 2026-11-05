@@ -24,6 +24,10 @@ func (d *Daemon) webStore() *web.Store {
 	return web.OpenStore(web.StorePath(filepath.Dir(d.stateFile())))
 }
 
+// UploadDir is where web access keeps the photos a phone sends for the
+// agents: in the state folder, outside every project.
+func (d *Daemon) UploadDir() string { return filepath.Join(d.opts.StateDir, "uploads") }
+
 // startTunnel is tunnel.Start, apart so tests can fake it. tunnelMu
 // orders it and the backoffs, which tests swap while a loop runs.
 var (
