@@ -230,6 +230,41 @@ func (t *cloudflare) Stop() error {
 	return nil
 }
 
+// hostLabel is a label of a DNS name, lowercased.
+var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
+// ErrHostname is a Cloudflare tunnel's hostname that isn't one.
+var ErrHostname = errors.New("a hostname is a bare name, as term.example.com, with no path or port")
+
+// ParseHostname reads a Cloudflare tunnel's public hostname as the user
+// gives it: a bare name, as term.example.com, or its URL pasted whole,
+// https://term.example.com/, which gives its name. A path or a port is
+// refused: the tunnel serves its hostname alone, on https's port. "" is
+// none.
+func ParseHostname(v string) (string, error) {
+	h := strings.ToLower(strings.TrimSpace(v))
+	if scheme, rest, ok := strings.Cut(h, "://"); ok {
+		if scheme != "https" && scheme != "http" {
+			return "", ErrHostname
+		}
+		h = rest
+	}
+	h = strings.TrimSuffix(h, "/")
+	if h == "" {
+		return "", nil
+	}
+	labels := strings.Split(h, ".")
+	if len(h) > 253 || len(labels) < 2 {
+		return "", ErrHostname
+	}
+	for _, l := range labels {
+		if len(l) > 63 || !hostLabel.MatchString(l) {
+			return "", ErrHostname
+		}
+	}
+	return h, nil
+}
+
 // whyNotCloudflare says what keeps a Cloudflare tunnel from being made
 // here.
 func whyNotCloudflare() string {

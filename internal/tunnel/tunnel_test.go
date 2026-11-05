@@ -539,3 +539,29 @@ func TestEnableLink(t *testing.T) {
 		}
 	}
 }
+
+// A hostname is taken bare, or from its URL pasted whole; a path, a port
+// or a name that isn't one is refused.
+func TestParseHostname(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"term.example.com", "term.example.com"},
+		{"  Term.Example.com ", "term.example.com"},
+		{"https://term.example.com/", "term.example.com"},
+		{"https://term.example.com", "term.example.com"},
+		{"term.example.com/", "term.example.com"},
+		{"", ""},
+		{"https://", ""},
+	} {
+		if got, err := ParseHostname(tc.in); err != nil || got != tc.want {
+			t.Errorf("ParseHostname(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+	}
+	for _, bad := range []string{
+		"https://term.example.com/app", "term.example.com:8443", "ftp://term.example.com",
+		"localhost", "term example.com", "-term.example.com", "term..example.com", "user@term.example.com",
+	} {
+		if got, err := ParseHostname(bad); !errors.Is(err, ErrHostname) {
+			t.Errorf("ParseHostname(%q) = %q, %v; want refused", bad, got, err)
+		}
+	}
+}
