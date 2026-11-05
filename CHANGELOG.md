@@ -3,6 +3,80 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.14.0
+
+The phone is enough while you're away from the computer. It tells you when
+an agent needs you, answers it in a tap, starts new agents, and reads what
+they changed.
+
+### Notifications
+
+- **The bell in the list turns notifications on for that phone.** A
+  session that needs you, failed or finished reaches the lock screen, but
+  not while you're using the computer. A notification names only the
+  session and what happened, unless you let it show what the agent says.
+  A program's own notifications are a separate choice, off at first.
+- **Add the page to your home screen** to have omaterm as an app. An
+  iPhone needs that for notifications (iOS 16.4 or later), and the app
+  pairs again with a code from `omaterm web pair`.
+- Notifications need HTTPS, through Tailscale or Cloudflare, and no
+  account anywhere: omaterm signs them with a key of its own.
+  `omaterm web devices` says which devices are notified.
+
+### Answering
+
+- **When an agent asks, the whole question shows over the key bar,** with
+  its choices as buttons: one tap answers. While an agent works, **Stop**
+  interrupts it.
+- **Needs you,** at the top of the list, holds the sessions waiting for
+  you or failed, across projects, with the longest waiting first. A
+  session you open on the phone counts as seen on the computer too.
+- **Compose remembers.** **Recent** brings back what you sent before.
+  **When free** lines a prompt up for an agent that is still working:
+  omaterm types it in once the agent is back at its prompt, and you can
+  cancel it until then.
+
+### Reading
+
+The **folder** button in a session's header shows what its agent works on.
+Nothing there edits, stages or commits, and the terminal keeps running
+behind it.
+
+- **Output:** the session's text, to read whole, copy and search, with
+  its links. A process that crashed shows its last lines there.
+- **Files:** the session's folder (an agent's worktree, or else the
+  project), with each file's text or picture.
+- **Changes:** the files it changed, each with its diff, since the last
+  commit or, in a worktree, since its base branch. In a diff, ‹ › go to
+  the next file, long lines wrap, and a tap on a line's number asks the
+  agent about that line.
+
+### Starting
+
+- **+ starts a new agent from the phone:** Claude Code, Codex, OpenCode
+  or another, in a worktree of its own if you like. A first task is typed
+  in once the agent is ready.
+- **📎 in the compose box sends a photo or a screenshot.** omaterm keeps a
+  copy on the computer for a day, without its location, and pastes its
+  path into the prompt.
+
+### Fixes
+
+- **Coming back to the page reconnects on its own,** after the phone was
+  locked or on another network. A Send tapped as it comes back waits for
+  the connection.
+- A process's pill on the phone no longer links to its Dev URL, which is
+  the phone's own loopback there: it reads ":5173 · on the computer", and
+  only a share link is a link.
+- A session led by a browser pane opened as "This session is gone" from a
+  tab, a pill or a chip. It now opens its first terminal.
+- A tablet keeps the key bar and Compose.
+- A row's time moves on each minute.
+- Signing out wipes the phone's drafts and Recent.
+- `omaterm read` still shows a stopped process's last lines. They are kept
+  in memory, never on disk.
+- `omaterm inbox` shows a prompt the phone lined up as from web access.
+
 ## 0.13.2
 
 omaterm moves to mygo 0.7, with new installers and a sidebar row that
