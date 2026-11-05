@@ -626,7 +626,18 @@ function processRow(s, proj, open) {
   );
 }
 
+// newSession opens the New Agent sheet (newagent.js, loaded the first
+// time) for the project; without it, '+' makes a shell as it did.
+let newAgentPromise = null;
 async function newSession(project) {
+  const mod = await (newAgentPromise ??= import("./newagent.js").catch(() => null));
+  if (mod && state) {
+    mod.openNewAgent({
+      project, projects: state.projects, api, h,
+      open: (pane) => { location.hash = "#/pane/" + encodeURIComponent(pane); },
+    });
+    return;
+  }
   try {
     const made = await api("/api/sessions", { project });
     location.hash = "#/pane/" + encodeURIComponent(made.pane);

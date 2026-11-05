@@ -19,6 +19,9 @@
 // repository with a change, which the page lists and shows, and the
 // terminal still takes keys after them. With WEB_CHECK_SHOTS=<dir>, each
 // view is saved there as a PNG.
+//
+// So is starting work from the phone: '+' opens the New Agent sheet,
+// which starts a shell session and opens it.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -328,6 +331,43 @@ try {
     const shown = await evaluate(`!document.querySelector(".compose-mic").hidden || !document.querySelector(".compose-lang").hidden`);
     if (shown) throw new Error("the mic still shows");
     await tap(".compose-close");
+  });
+
+  // New Agent: '+' opens the sheet, which starts a shell in the project
+  // and opens it. No agent is started: a real one would run.
+  await check("new agent: the sheet starts a shell session, and opens it", "", async () => {
+    await evaluate(`location.hash = "#/"`);
+    await waitFor("the list did not show", `Boolean(document.querySelector(".proj .add"))`);
+    await tap(".proj .add");
+    await waitFor("the sheet's agents did not load", `document.querySelectorAll(".na-chip").length === 6`);
+    await sleep(400);
+    await shot("new-agent");
+    await tap(".na-chip", "Shell only");
+    await waitFor("a shell still asks for a first task", `document.querySelector("#na-task").closest(".na-field").hidden`);
+    await tap(".na-start");
+    await waitFor("no new session opened", `/^#\\/pane\\//.test(location.hash) && !location.hash.endsWith(${JSON.stringify(pane)})`);
+    const n = JSON.parse(omaterm("ls", "--json")).length;
+    if (n !== 2) throw new Error(`${n} sessions`);
+  });
+  await check("new agent: an agent in a worktree of its own, with a first task, as the sheet shows it", "", async () => {
+    await evaluate(`location.hash = "#/"`);
+    await waitFor("the list did not show", `Boolean(document.querySelector(".proj .add"))`);
+    await tap(".proj .add");
+    await waitFor("the sheet's agents did not load", `document.querySelectorAll(".na-chip").length === 6`);
+    await tap(".na-chip", "Claude Code");
+    await tap(".na-switch");
+    await waitFor("no branch to name", `!document.querySelector("#na-branch").closest(".na-sub").hidden`);
+    await evaluate(`document.querySelector("#na-branch").focus()`);
+    await cdp("Input.insertText", { text: "fix-login" });
+    await evaluate(`document.querySelector("#na-task").focus()`);
+    await cdp("Input.insertText", { text: "The login button does nothing on a phone: find out why and fix it." });
+    const hint = await evaluate(`document.querySelector(".na-sub .na-hint").textContent`);
+    if (hint !== "A new branch from main, in check/.worktrees/fix-login.") throw new Error(`the hint says ${hint}`);
+    await evaluate(`document.activeElement.blur()`);
+    await sleep(300);
+    await shot("new-agent-worktree");
+    await tap(".na-cancel");
+    await waitFor("the sheet did not close", `!document.querySelector(".na")`);
   });
 } catch (err) {
   failed++;
