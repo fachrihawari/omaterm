@@ -3,6 +3,7 @@ package main
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -28,6 +29,36 @@ func TestSidebarShowsSummary(t *testing.T) {
 	tr.Frame()
 	if tr.HasText("All tests pass now") {
 		t.Fatal("the compact sidebar shows the summary")
+	}
+}
+
+// A session with no status ends its row with its time, where another's
+// status icon is, rather than beside an empty slot.
+func TestSessionTimeTakesTheEdge(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	idle := a.activeSplitLeaf()
+	a.newTerminalTab()
+	done := a.activeSplitLeaf()
+	now := nowFunc()
+	a.status[idle] = session.Info{ID: idle, Session: a.tabs[0].ID, Status: session.Idle, Progress: -1, Dir: a.workspace,
+		Since: now.Add(-2 * time.Hour).UnixMilli()}
+	a.status[done] = session.Info{ID: done, Session: a.tabs[1].ID, Agent: "claude", Process: "claude", Status: session.Idle,
+		Progress: -1, Dir: a.workspace, Message: "Done", Since: now.Add(-17 * time.Minute).UnixMilli()}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	tr.Frame()
+	bare, ok := tr.Find("2h")
+	if !ok {
+		t.Fatal("no time on the session with no status")
+	}
+	beside, ok := tr.Find("17m")
+	if !ok {
+		t.Fatal("no time on the done session")
+	}
+	// The icon is 14 wide, 8 from the time.
+	if d := (bare.X + bare.W) - (beside.X + beside.W); d < 21 || d > 23 {
+		t.Errorf("the bare time ends %.1f right of the one beside an icon, want 22", d)
 	}
 }
 
