@@ -1109,6 +1109,14 @@ function showTerm(id) {
   // with no kind, the terminal again.
   let browse = null;
   let lastStatus = "";
+  // ask takes a diff's line to Compose, over the terminal it goes to: back
+  // goes back to the diff.
+  const ask = (text) => {
+    if (!composeBox?.prefill) return;
+    history.pushState(null, "", paneHash);
+    showView("");
+    composeBox.prefill(text);
+  };
   const showView = (kind, path) => {
     const group = { output: "output", files: "files", file: "files", changes: "changes", diff: "changes" }[kind];
     if (group) browseBtn.href = paneHash + "/" + group;
@@ -1124,7 +1132,7 @@ function showTerm(id) {
     xt.blur(); // the phone's keyboard goes away with the terminal
     loadBrowse().then((mod) => {
       if (!mod || closed || card.dataset.view !== kind) return;
-      browse ??= mod.mountBrowse(view, { id, api, h });
+      browse ??= mod.mountBrowse(view, { id, api, h, ask });
       browse.show(kind, path);
     });
   };

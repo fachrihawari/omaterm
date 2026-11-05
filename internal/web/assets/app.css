@@ -423,7 +423,19 @@ a.bv-crumb:hover { color: var(--text); }
 .dl.hunk { color: var(--text-faint); background: color-mix(in srgb, var(--info) 8%, var(--card)); margin-top: 6px; }
 .dl.hunk:first-child { margin-top: 0; }
 .dl.note .t { color: var(--text-faint); font-style: italic; }
-.bv-btn:disabled { opacity: 0.35; cursor: default; background: none; }
+/* A diff's bar steps to the changed file before and after it, and wraps
+   its long lines (on unless turned off, and kept); a tap on a line's
+   number asks about it. */
+.bv-btn[aria-pressed="true"] { color: var(--accent); }
+.bv-btn.off, .bv-btn:disabled { opacity: 0.35; cursor: default; background: none; }
+.bv-diff.wrap { min-width: 0; }
+.bv-diff.wrap .dl .t {
+  flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  padding-left: calc(6px + 1.4ch); text-indent: -1.4ch; /* a wrapped line goes on under the code, past its + or − */
+}
+.bv-diff.wrap .dl .t::before { text-indent: 0; }
+.bv-diff.ask .dl:not(.hunk) :is(.o, .n) { cursor: pointer; }
+.bv-diff.ask .dl:not(.hunk) :is(.o, .n):active { color: var(--accent); }
 /* Output (output.js): the pane's text at a reading size, wrapped, to
    select, copy and find in; its bar and find stay on top. */
 .bv-head { position: sticky; top: 0; z-index: 2; }

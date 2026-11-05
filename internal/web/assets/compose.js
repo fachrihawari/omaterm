@@ -5,6 +5,7 @@
 //   import { mountCompose } from "./compose.js";
 //   const compose = mountCompose(el, { sendPaste, sendKey, id });
 //   compose.open(); compose.close(); compose.destroy();
+//   compose.prefill(text);   // opens it with text after the draft, a line of its own
 //
 // sendPaste and sendKey return false when they could not send; the text then
 // stays in the box, with a note. Send pastes the text (sendPaste) and then presses Enter (sendKey), so a
@@ -374,6 +375,14 @@ export function mountCompose(el, options = {}) {
   return {
     open,
     close,
+    // prefill opens the box with text added to the draft, on a line of
+    // its own: a diff's line to ask about, with room to ask after it.
+    prefill(text) {
+      const v = box.value;
+      box.value = v + (v && !v.endsWith("\n") ? "\n" : "") + text + "\n";
+      save(box.value);
+      open();
+    },
     destroy() {
       stopRecording(false);
       save(box.value);

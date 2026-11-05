@@ -18,10 +18,11 @@
 // So are the session's Files and Changes views: the project is a git
 // repository with a change, which the page lists and shows, and the
 // terminal still takes keys after them. With WEB_CHECK_SHOTS=<dir>, each
-// view is saved there as a PNG. Output shows a session's text, its links
-// and finds in it, and a process that crashed opens its last lines. With
-// WEB_CHECK_THEME=<file>, a theme as the app sends it (web.setTheme; a
-// light one, say), the page takes that look.
+// view is saved there as a PNG. A diff steps to the next changed file,
+// wraps, and asks about a line in Compose. Output shows a session's text,
+// its links and finds in it, and a process that crashed opens its last
+// lines. With WEB_CHECK_THEME=<file>, a theme as the app sends it
+// (web.setTheme; a light one, say), the page takes that look.
 
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -293,6 +294,34 @@ try {
     await tap(".pane-view .bv-row .nm", "main.go");
     await waitFor("the diff did not show", `[...document.querySelectorAll(".dl.add .t")].some((e) => e.textContent.includes("hello from the phone"))`);
     await shot("diff");
+  });
+  const diffOf = (path) => `decodeURIComponent(location.hash).endsWith("/changes/${path}") && document.querySelector(".bv-diff")`;
+  await check("changes: ‹ › step to the other changed file and back", "", async () => {
+    const [there, back] = await evaluate(`Boolean(document.querySelector('.bv-step[aria-label="Next file"]'))`) ? ["Next", "Previous"] : ["Previous", "Next"];
+    await tap(`.bv-step[aria-label="${there} file"]`);
+    await waitFor("notes.txt's diff did not show", `${diffOf("notes.txt")} && [...document.querySelectorAll(".dl.add .t")].some((e) => e.textContent === "new")`);
+    if (await evaluate(`Boolean(document.querySelector('.bv-step[aria-label="${there} file"]'))`)) throw new Error(`the end of the list has a ${there}`);
+    await tap(`.bv-step[aria-label="${back} file"]`);
+    await waitFor("main.go's diff did not come back", diffOf("src/main.go"));
+  });
+  await check("changes: a diff wraps until its button turns that off, which is kept", "", async () => {
+    const wraps = () => evaluate(`[document.querySelector(".bv-diff").classList.contains("wrap"), localStorage.getItem("omaterm.diff.wrap")]`);
+    if (!(await wraps())[0]) throw new Error("the diff does not wrap");
+    await tap(".bv-wrap");
+    const [on, kept] = await wraps();
+    if (on || kept !== "0") throw new Error(`after the tap, wrap ${on}, kept ${kept}`);
+    await tap(".bv-wrap");
+  });
+  await check("changes: a tap on a line's number asks about it in Compose, sending nothing", "", async () => {
+    await tap(".dl.add .n");
+    const want = 'src/main.go:4 — println("hello from the phone")\n';
+    await waitFor("Compose did not open with the line", `document.querySelector(".compose-box")?.value === ${JSON.stringify(want)} && !document.querySelector(".pane").dataset.view`);
+    await sleep(400);
+    await shot("diff-ask");
+    await evaluate(`(() => { const b = document.querySelector(".compose-box"); b.value = ""; b.dispatchEvent(new Event("input")); })()`);
+    await tap(".compose-close");
+    await evaluate("history.back()");
+    await waitFor("back did not go back to the diff", diffOf("src/main.go"));
   });
   await check("back to the terminal, keys still reach it", hex("z"), async () => {
     await tap(".btn-close");
