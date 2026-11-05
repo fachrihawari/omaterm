@@ -19,6 +19,11 @@
 // repository with a change, which the page lists and shows, and the
 // terminal still takes keys after them. With WEB_CHECK_SHOTS=<dir>, each
 // view is saved there as a PNG.
+//
+// And what makes it a phone's app: the manifest, the service worker and
+// the icons are served as their types, the worker runs, and the list's
+// bell opens the notifications sheet, which can turn them on (a real
+// subscription needs a push service, so none is made).
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -328,6 +333,31 @@ try {
     const shown = await evaluate(`!document.querySelector(".compose-mic").hidden || !document.querySelector(".compose-lang").hidden`);
     if (shown) throw new Error("the mic still shows");
     await tap(".compose-close");
+  });
+
+  await check("notifications: the manifest, worker and icons are served as their types", "", async () => {
+    for (const [path, type] of [["/manifest.json", "application/json"], ["/sw.js", "text/javascript"],
+      ["/icon-180.png", "image/png"], ["/icon-192.png", "image/png"], ["/icon-512.png", "image/png"]]) {
+      const res = await fetch(base + path);
+      const got = res.headers.get("content-type") || "";
+      if (!res.ok || !got.startsWith(type)) throw new Error(`${path} is ${res.status} ${got}`);
+    }
+    const linked = await evaluate(`[...document.querySelectorAll('link[rel="manifest"], link[rel="apple-touch-icon"]')].length`);
+    if (linked !== 2) throw new Error(`the page links ${linked} of the manifest and the touch icon`);
+  });
+  await check("notifications: the worker runs, and the list's bell opens its sheet", "", async () => {
+    await waitFor("the service worker isn't running", `navigator.serviceWorker.getRegistration().then((r) => Boolean(r?.active))`);
+    await evaluate(`location.hash = ""`);
+    await waitFor("no bell in the list's footer", `Boolean(document.querySelector(".side-f .bell")?.getClientRects().length)`);
+    await shot("push-list");
+    await tap(".side-f .bell");
+    await waitFor("the bell opened no sheet", `Boolean(document.querySelector(".push-sheet .push-on"))`);
+    const st = await evaluate(`[document.querySelector(".push-on").disabled, document.querySelector(".push-words").disabled, document.querySelector(".push-note").hidden]`);
+    if (st.join() !== "false,true,true") throw new Error(`notify disabled, words disabled, note hidden: ${st}`);
+    await sleep(300);
+    await shot("push-sheet");
+    await tap(".push-close");
+    await waitFor("the sheet stayed", `!document.querySelector(".push-sheet")`);
   });
 } catch (err) {
   failed++;

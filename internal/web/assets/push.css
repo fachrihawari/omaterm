@@ -1,0 +1,73 @@
+/* Notifications (push.js): the bell in the list's footer, and its sheet. */
+
+.side-f .bell { margin-left: auto; background: none; }
+.side-f .bell + .link { margin-left: 0; }
+.side-f .bell.on { color: var(--accent); }
+@media (max-width: 859px) {
+  .side-f .bell { width: 36px; height: 36px; border-radius: 8px; }
+  .side-f .bell svg { width: 17px; height: 17px; }
+}
+
+.push-sheet {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.push-backdrop { position: absolute; inset: 0; background: var(--scrim); }
+.push-panel {
+  position: relative; width: 100%; max-width: 440px;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  border: 1px solid var(--border-strong); border-bottom: 0; border-radius: 16px 16px 0 0;
+  background: var(--popover); color: var(--text);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.25);
+}
+.push-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 6px; }
+.push-head h2 { margin: 0; font-size: 16px; font-weight: 600; color: var(--text-strong); }
+.push-close { width: 36px; height: 36px; border-radius: 8px; background: none; }
+.push-close svg { width: 16px; height: 16px; }
+
+.push-row {
+  display: flex; align-items: center; gap: 14px; padding: 10px 0;
+  border-top: 1px solid var(--border); cursor: pointer;
+}
+.push-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.push-text b { font-size: 14px; font-weight: 500; color: var(--text); }
+.push-text small { font-size: 12.5px; line-height: 1.4; color: var(--text-muted); }
+.push-row:has(.push-switch:disabled) { cursor: default; }
+.push-row:has(.push-switch:disabled) .push-text b { color: var(--text-faint); }
+
+/* A switch, drawn on the checkbox itself. */
+.push-switch {
+  appearance: none; -webkit-appearance: none; margin: 0; flex: none; cursor: inherit;
+  position: relative; width: 44px; height: 26px; border-radius: 13px;
+  background: var(--chip); border: 1px solid var(--border-strong);
+  transition: background var(--dur-fast), border-color var(--dur-fast);
+}
+.push-switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--text-muted); transition: translate var(--dur-base) var(--ease-out), background var(--dur-fast);
+}
+.push-switch:checked { background: var(--accent); border-color: var(--accent); }
+.push-switch:checked::after { translate: 18px 0; background: var(--accent-text); }
+.push-switch:disabled { opacity: 0.45; }
+.push-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.push-note {
+  margin: 6px 0 0; padding: 10px 12px; border-radius: 10px;
+  font-size: 12.5px; line-height: 1.45; color: var(--text-soft); background: var(--chip);
+}
+.push-note[hidden] { display: none; }
+
+/* It slides up as its scrim fades in, and back down faster. */
+.push-backdrop { transition: opacity var(--dur-base); }
+.push-panel { transition: translate 240ms var(--ease-out), opacity var(--dur-base); }
+@starting-style {
+  .push-backdrop { opacity: 0; }
+  .push-panel { translate: 0 40px; opacity: 0; }
+}
+.push-sheet.leaving { pointer-events: none; }
+.push-sheet.leaving .push-backdrop { opacity: 0; }
+.push-sheet.leaving .push-panel { translate: 0 40px; opacity: 0; transition-duration: 140ms; transition-timing-function: ease-in; }
+@media (prefers-reduced-motion: reduce) {
+  .push-switch::after { transition: none; }
+}

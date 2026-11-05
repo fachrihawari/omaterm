@@ -49,6 +49,8 @@ const composePromise = import("./compose.js").catch(() => null);
 // The files and changes views load the first time one opens.
 let browsePromise = null;
 const loadBrowse = () => (browsePromise ??= import("./browse.js").catch(() => null));
+// Notifications: the bell in the list's footer (push.js), once loaded.
+let push = null;
 
 // SVG dictionary
 const S = (d, extra = "") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
@@ -404,6 +406,8 @@ function showShell() {
   const root = h("div", { class: "shell" }, sidebar, mainView);
   app.replaceChildren(root);
   shell = { root, list, foot, waitingBadge, pills, content };
+  if (push) push.refresh();
+  else import("./push.js").then((mod) => { push ??= mod.mountPush({ api, h }); renderSidebar(); }).catch(() => {});
 }
 
 function renderPills() {
@@ -525,9 +529,13 @@ function renderSidebar() {
   if (offline) {
     footElements.push(h("span", { class: "offline" }, "Reconnecting…"));
   }
+  if (push) {
+    footElements.push(push.el);
+    push.badge(nWaiting);
+  }
   footElements.push(h("button", {
     class: "link", title: "Sign out this browser",
-    onclick: async () => { if (confirm("Sign out this browser?")) { await api("/api/logout", {}); showPair(); } },
+    onclick: async () => { if (confirm("Sign out this browser?")) { await push?.forget(); await api("/api/logout", {}); showPair(); } },
   }, icon("signout", "s12"), "Sign out"));
 
   foot.replaceChildren(...footElements);

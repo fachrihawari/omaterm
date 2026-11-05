@@ -231,3 +231,44 @@ func TestWebPush(t *testing.T) {
 		t.Fatalf("unpaired key: %s", res.Status)
 	}
 }
+
+// The page installs as an app: its manifest, its worker and its icons are
+// served as what they are, unpaired, and the worker neither answers the
+// page's requests nor keeps any of them.
+func TestWebInstallable(t *testing.T) {
+	f := newFixture(t)
+	c := f.client(t)
+	for path, want := range map[string]string{
+		"/manifest.json": "application/json", "/sw.js": "text/javascript", "/push.js": "text/javascript",
+		"/icon-180.png": "image/png", "/icon-192.png": "image/png", "/icon-512.png": "image/png", "/icon-maskable-512.png": "image/png",
+	} {
+		res, err := c.Get(f.base + path)
+		if err != nil || res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), want) {
+			t.Fatalf("%s: %v %v %q", path, res.Status, err, res.Header.Get("Content-Type"))
+		}
+	}
+	res, _ := c.Get(f.base + "/manifest.json")
+	var m struct {
+		Display  string
+		StartURL string `json:"start_url"`
+		Icons    []struct{ Src string }
+	}
+	json.NewDecoder(res.Body).Decode(&m)
+	if m.Display != "standalone" || m.StartURL != "/" || len(m.Icons) < 3 {
+		t.Fatalf("manifest %+v", m)
+	}
+	res, _ = c.Get(f.base + "/sw.js")
+	sw, _ := io.ReadAll(res.Body)
+	for _, banned := range []string{`"fetch"`, "onfetch", "caches"} {
+		if strings.Contains(string(sw), banned) {
+			t.Fatalf("sw.js has %s", banned)
+		}
+	}
+	res, _ = c.Get(f.base + "/")
+	page, _ := io.ReadAll(res.Body)
+	for _, link := range []string{`rel="manifest" href="manifest.json"`, `rel="apple-touch-icon" href="icon-180.png"`} {
+		if !strings.Contains(string(page), link) {
+			t.Fatalf("the page doesn't link %s", link)
+		}
+	}
+}
