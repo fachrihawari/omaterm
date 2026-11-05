@@ -167,6 +167,9 @@ rather than starting your own npm run dev:
     omaterm start web --wait                     # run it; exits once it is up
     omaterm read web / omaterm wait web          # its output, and waiting on it: each runs as a session named after it
 
+A process that stopped or crashed keeps its last 500 lines: omaterm read web
+still shows why.
+
 A process with a URL has a link in ` + "`omaterm ps --json`" + `, https://shop.localhost:
 open that rather than a localhost port.
 

@@ -405,6 +405,8 @@ try {
     if (!sum.startsWith("crash isn't running")) throw new Error(`the bar says ${sum}`);
     await shot("output-stopped");
     if (!/crash\s+failed/.test(inProcs("ps"))) throw new Error("reading it started it: " + inProcs("ps"));
+    const read = inProcs("read", "crash");
+    if (!read.includes("Error: boom")) throw new Error(`omaterm read crash says ${JSON.stringify(read)}`);
   });
   await check("back to the first session's terminal", "", async () => {
     await evaluate(`location.hash = "#/pane/${pane}"`);
