@@ -8,3 +8,10 @@ func SetSweepEvery(d time.Duration) (undo func()) {
 	sweepEvery = d
 	return func() { sweepEvery = was }
 }
+
+// SetMaxText caps the pane text the page reads at n bytes, until undone.
+func SetMaxText(n int) (undo func()) {
+	was := maxText
+	maxText = n
+	return func() { maxText = was }
+}
