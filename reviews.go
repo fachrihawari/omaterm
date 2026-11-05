@@ -27,12 +27,12 @@ type reviewAsk struct {
 	open    bool
 	session string // the session whose work is reviewed
 	name    string
-	agent   string // the reviewer, of worktreeAgents but the shell
+	agent   string // the reviewer, of agent.Starters but the shell
 	err     string
 }
 
-// reviewers are the agents that review: worktreeAgents', but the shell.
-var reviewers = worktreeAgents[:len(worktreeAgents)-1]
+// reviewers are the agents that review: agent.Starters, but the shell.
+var reviewers = agent.Starters[:len(agent.Starters)-1]
 
 // reviewCommand is the command that starts a reviewer; tests replace it.
 var reviewCommand = func(agent string) []string { return []string{agent} }

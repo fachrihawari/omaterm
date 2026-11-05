@@ -100,11 +100,11 @@ func TestProjectProcessesOverTheDaemon(t *testing.T) {
 	if p := a.proc(t, "web"); p.Status != procs.Stopped {
 		t.Fatalf("after stop: %+v", p)
 	}
-	// The pane is let go with the run it belonged to: a stopped process
-	// has no pane to read, and the daemon keeps no scrollback for one,
-	// as TestNoHistoryAfterClose in internal/daemon insists.
-	if out, err := a.CLI("read", "web"); err == nil {
-		t.Fatalf("a stopped process still has a pane: %q", out)
+	// The pane is let go with the run it belonged to, and no scrollback is
+	// kept on disk for it (TestNoHistoryAfterClose in internal/daemon), but
+	// its last lines stay in memory: read still shows what it said last.
+	if got := a.MustCLI("read", "web"); !strings.Contains(got, "up") {
+		t.Fatalf("a stopped process's last lines: %q", got)
 	}
 
 	// 7. A failure restarts, with the exit code that caused it.

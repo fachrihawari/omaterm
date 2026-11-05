@@ -5,9 +5,12 @@
 //   import { mountCompose } from "./compose.js";
 //   const compose = mountCompose(el, { sendPaste, sendKey, id });
 //   compose.open(); compose.close(); compose.destroy();
+//   compose.prefill(text);   // opens it with text after the draft, a line of its own
 //
 // sendPaste and sendKey return false when they could not send; the text then
-// stays in the box, with a note. Send pastes the text (sendPaste) and then presses Enter (sendKey), so a
+// stays in the box, with a note. ready, given, resolves to whether they
+// can, once the terminal has checked its socket: Send waits for it. Send
+// pastes the text (sendPaste) and then presses Enter (sendKey), so a
 // prompt is submitted once; Insert pastes it without Enter, to edit it in
 // the terminal. An unsent draft is kept in localStorage, one per pane (id)
 // under omaterm.compose:<id>, so a prompt is not sent to another session;
@@ -19,6 +22,15 @@
 // and sends them with the rest: it is never sent by itself. The language
 // chip beside it picks the language, kept under omaterm.voice.lang. Off,
 // neither shows.
+//
+// The 📎 sends a photo or screenshot to the computer, and pastes the path
+// it is kept at (attach.js).
+//
+// prompts.js adds Recent, the prompts sent before, and for an agent When
+// free, which lines a prompt up for once the agent is free; options.h,
+// signedOut and onQueued are for it.
+
+import { mountPrompts } from "./prompts.js";
 
 const STORE = "omaterm.compose";
 const LANG_STORE = "omaterm.voice.lang";
@@ -142,6 +154,17 @@ export function mountCompose(el, options = {}) {
   panel.append(head, box, foot);
   root.append(backdrop, panel);
   el.append(root);
+  const prompts = options.h ? mountPrompts({ ...options, head, panel, box, foot, insert, send, say }) : null;
+
+  // A photo or screenshot (attach.js): its path is pasted on its own as it
+  // is sent, its thumbnail shown over the box until Send.
+  import("./attach.js").then((mod) => {
+    if (ac.signal.aborted) return;
+    const attach = mod.mountAttach({ id: options.id, sendPaste, say, signal: ac.signal });
+    foot.prepend(attach.button);
+    box.before(attach.strip);
+    on(send, "click", attach.clear);
+  }).catch(() => {});
 
   let lastFocus = null;
   let leaving = 0;
@@ -271,6 +294,7 @@ export function mountCompose(el, options = {}) {
     clearTimeout(leaving);
     root.classList.remove("leaving");
     note.hidden = true;
+    prompts?.opened();
     refreshVoice();
     lastFocus = document.activeElement;
     root.hidden = false;
@@ -327,6 +351,31 @@ export function mountCompose(el, options = {}) {
       if (root.hidden || box.value.trim() === "") return;
     }
     const text = box.value;
+    // For once the agent is free: omaterm types it in then, with Enter.
+    if (prompts?.later()) {
+      if (text.trim() === "") return;
+      send.disabled = true;
+      const why = await prompts.queue(text);
+      send.disabled = false;
+      if (why) {
+        say(why);
+        return;
+      }
+      clear();
+      close();
+      return;
+    }
+    // Back from the background, the terminal checks its socket, which may
+    // have died: the text goes once it answers, and stays if it doesn't.
+    if (typeof options.ready === "function") {
+      send.disabled = insert.disabled = true;
+      const ok = await options.ready();
+      send.disabled = insert.disabled = false;
+      if (!ok) {
+        say("Not connected: not sent");
+        return;
+      }
+    }
     let sent = true;
     if (text.trim() !== "" && typeof sendPaste === "function") sent = sendPaste(text) !== false;
     if (sent && withEnter && typeof sendKey === "function") sent = sendKey("enter") !== false;
@@ -335,6 +384,7 @@ export function mountCompose(el, options = {}) {
       note.hidden = false;
       return;
     }
+    prompts?.remember(text);
     clear();
     close();
   }
@@ -374,9 +424,20 @@ export function mountCompose(el, options = {}) {
   return {
     open,
     close,
+    // prefill opens the box with text added to the draft, on a line of
+    // its own: a diff's line to ask about, with room to ask after it.
+    prefill(text) {
+      const v = box.value;
+      box.value = v + (v && !v.endsWith("\n") ? "\n" : "") + text + "\n";
+      save(box.value);
+      open();
+    },
+    // update follows the pane's state, for When free.
+    update: (pane) => prompts?.update(pane),
     destroy() {
       stopRecording(false);
       save(box.value);
+      prompts?.destroy();
       ac.abort();
       root.remove();
     },

@@ -62,11 +62,16 @@ type Server struct {
 	pairsAll []time.Time
 	// voices are each device's recent recordings, to limit them.
 	voices map[string][]time.Time
+	// uploads are each device's recent photos, to limit them (upload.go).
+	uploads map[string][]time.Time
 	// conns are the open WebSockets and the devices they serve: closing
 	// the server or signing a device out ends them, which http.Server
 	// does not do for a connection it has handed over.
 	conns map[*websocket.Conn]string
 	done  chan struct{}
+	// push sends the phones' notifications (push.go).
+	push     *pusher
+	pushOnce sync.Once
 }
 
 // sweepEvery is how often the open WebSockets' devices are checked, to
@@ -92,8 +97,12 @@ func Listen(addr string, d Daemon, store *Store) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{d: d, store: store, ln: ln, conns: map[*websocket.Conn]string{}, done: make(chan struct{})}
+	if _, err := store.vapidKey(true); err != nil { // the key pushes are signed with (push.go)
+		log.Printf("web: push key: %v", err)
+	}
 	s.srv = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go s.sweep()
+	go s.keepUploads()
 	go func() {
 		if err := s.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("web: %v", err)
@@ -195,12 +204,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/state", s.auth(s.state))
 	mux.HandleFunc("GET /api/theme", s.auth(s.theme))
 	mux.HandleFunc("GET /api/events", s.auth(s.events))
+	// Starting work from the phone: New Agent (newagent.go), a photo (upload.go).
 	mux.HandleFunc("POST /api/sessions", s.auth(s.create))
+	mux.HandleFunc("GET /api/new", s.auth(s.newOptions))
+	mux.HandleFunc("POST /api/panes/{id}/upload", s.auth(s.upload))
 	mux.HandleFunc("GET /api/panes/{id}/attach", s.auth(s.attach))
+	mux.HandleFunc("GET /api/panes/{id}/files", s.auth(s.files))
+	mux.HandleFunc("GET /api/panes/{id}/file", s.auth(s.file))
+	mux.HandleFunc("GET /api/panes/{id}/raw", s.auth(s.raw))
+	mux.HandleFunc("GET /api/panes/{id}/changes", s.auth(s.changes))
+	mux.HandleFunc("GET /api/panes/{id}/diff", s.auth(s.diff))
+	mux.HandleFunc("GET /api/panes/{id}/text", s.auth(s.text))
+	mux.HandleFunc("POST /api/panes/{id}/seen", s.auth(s.seen))
+	// Prompts for an agent once it is free (queue.go).
+	mux.HandleFunc("GET /api/panes/{id}/queue", s.auth(s.queue))
+	mux.HandleFunc("POST /api/panes/{id}/queue", s.auth(s.enqueue))
+	mux.HandleFunc("DELETE /api/panes/{id}/queue/{msg}", s.auth(s.unqueue))
 	mux.HandleFunc("POST /api/logout", s.auth(s.logout))
 	mux.HandleFunc("GET /api/voice", s.auth(s.voiceStatus))
 	mux.HandleFunc("POST /api/voice", s.auth(s.transcribe))
 	mux.HandleFunc("POST /api/voice/warm", s.auth(s.warmVoice))
+	// Notifications on this device (push.go).
+	mux.HandleFunc("GET /api/push/key", s.auth(s.pushStatus))
+	mux.HandleFunc("POST /api/push", s.auth(s.subscribe))
+	mux.HandleFunc("DELETE /api/push", s.auth(s.unsubscribe))
 	return secure(mux)
 }
 
@@ -477,6 +504,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	defer s.track(c, r)()
 	ctx := c.CloseRead(r.Context())
+	go keepAlive(ctx, c)
 	kick := make(chan struct{}, 1)
 	stop := s.d.Watch(func() {
 		select {
@@ -519,23 +547,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-}
-
-func (s *Server) create(w http.ResponseWriter, r *http.Request) {
-	var p struct {
-		Project string `json:"project"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&p); err != nil || p.Project == "" {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	params, _ := json.Marshal(map[string]string{"project": p.Project})
-	res, err := s.d.Handle(r.Context(), "create", params)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	writeJSON(w, res)
 }
 
 // maxVoiceBytes caps a recording, apart from the JSON calls' limit: two

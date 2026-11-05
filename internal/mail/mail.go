@@ -27,6 +27,8 @@ const (
 	// bootHold is how long a message waits for an agent in a pane that
 	// runs none yet, as one that just started.
 	bootHold = 30 * time.Second
+	// maxBootHold bounds the longer one an ask may give (BootMS).
+	maxBootHold = 10 * time.Minute
 	// quietGrace is how long an agent stays stopped, its message
 	// unanswered, before it is taken to have stopped without replying.
 	quietGrace = 3 * time.Second
@@ -77,6 +79,8 @@ type item struct {
 	worked, taken, past, retyped bool
 	// noted tells a note its agent took up, or had the time to.
 	noted bool
+	// boot is how long it waits for an agent to start, bootHold when 0.
+	boot time.Duration
 }
 
 // New returns a mailbox for reg's panes.
@@ -92,6 +96,14 @@ func (it *item) settled() bool {
 		return true
 	}
 	return it.Note && it.State == proto.MailDelivered && it.noted
+}
+
+// bootHold is how long it waits for an agent to start in its pane.
+func (it *item) bootHold() time.Duration {
+	if it.boot > 0 {
+		return it.boot
+	}
+	return bootHold
 }
 
 func (it *item) open() bool {
@@ -166,7 +178,7 @@ func (m *Mailbox) Ask(p proto.MailAskParams) (proto.Mail, error) {
 	m.next++
 	it := &item{Mail: proto.Mail{ID: "m" + strconv.Itoa(m.next), From: p.From, FromName: p.FromName, To: p.To, ToName: p.ToName,
 		Text: p.Text, Note: p.Note, State: proto.MailQueued, Created: now.UnixMilli()},
-		released: p.NoWait || p.Note, left: now}
+		released: p.NoWait || p.Note, left: now, boot: min(time.Duration(max(p.BootMS, 0))*time.Millisecond, maxBootHold)}
 	m.items = append(m.items, it)
 	m.trim()
 	m.changedLocked()
@@ -296,6 +308,28 @@ func (m *Mailbox) Reply(p proto.MailReplyParams) (proto.Mail, error) {
 	return it.Mail, nil
 }
 
+// Cancel takes back a message its agent wasn't given yet: it goes to
+// nobody, and its asker is told it wasn't delivered. With a From, only
+// one that pane asked.
+func (m *Mailbox) Cancel(p proto.MailCancelParams) (proto.Mail, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	it := m.find(p.ID)
+	switch {
+	case it == nil:
+		return proto.Mail{}, proto.Errorf(proto.CodeNotFound, "no message "+p.ID)
+	case p.From != "" && it.From != p.From:
+		return proto.Mail{}, proto.Errorf(proto.CodeUsage, it.ID+" isn't yours")
+	case it.State == proto.MailFailed:
+		return proto.Mail{}, proto.Errorf(proto.CodeUsage, it.ID+" wasn't delivered: "+it.Why)
+	case it.sending || it.State != proto.MailQueued:
+		return proto.Mail{}, proto.Errorf(proto.CodeUsage, it.ID+" was typed in already")
+	}
+	it.State, it.Why = proto.MailFailed, "it was cancelled"
+	m.changedLocked()
+	return it.Mail, nil
+}
+
 // List lists the messages to and from pane, every one for "".
 func (m *Mailbox) List(pane string) []proto.Mail {
 	m.mu.Lock()
@@ -348,7 +382,7 @@ func (m *Mailbox) Tick(now time.Time) {
 			}
 			hold, bracketed := p.MailHold(now)
 			switch {
-			case hold == session.NoAgent && now.Sub(p.Started()) > bootHold:
+			case hold == session.NoAgent && now.Sub(p.Started()) > it.bootHold():
 				it.State, it.Why = proto.MailFailed, "no agent runs in "+it.to()+": omaterm send types into a shell"
 			case hold != "":
 				it.Why = hold
@@ -545,6 +579,12 @@ func (m *Mailbox) Serve(ctx context.Context, method string, raw json.RawMessage)
 			return nil, err
 		}
 		return m.List(p.Pane), nil
+	case "mail.cancel":
+		var p proto.MailCancelParams
+		if err := decode(&p); err != nil {
+			return nil, err
+		}
+		return m.Cancel(p)
 	}
 	return nil, proto.Errorf(proto.CodeUsage, "no method "+method)
 }

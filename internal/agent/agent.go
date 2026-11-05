@@ -22,6 +22,11 @@ var Names = []string{
 	"agy",
 }
 
+// Starters are the agents New Agent starts, in the window and from the
+// phone: those that resume their conversation after a restart, then
+// Antigravity, then "shell" for none.
+var Starters = []string{"claude", "codex", "opencode", "pi", "agy", "shell"}
+
 // Detect returns the agent a process is, from its name and first
 // arguments, "" for none. npm installs agents as scripts that node runs,
 // so the script's path counts too.

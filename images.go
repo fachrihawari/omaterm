@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+
+	"omaterm/internal/fsview"
 )
 
 // Pictures open in an image viewer instead of the text editor, and diffs
@@ -31,20 +33,10 @@ type imageSide struct {
 // that claims 30000×30000 asked for gigabytes, and the app was killed.
 const maxPixels = 64 << 20
 
-// imageExts are the formats DecodeBitmap and ParseSVG can read.
-var imageExts = map[string]bool{
-	".png":  true,
-	".jpg":  true,
-	".jpeg": true,
-	".gif":  true,
-	".webp": true,
-	".bmp":  true,
-	".svg":  true,
-}
-
-// isImagePath reports whether path names a picture this app can show.
+// isImagePath reports whether path names a picture this app can show:
+// one DecodeBitmap or ParseSVG reads, as fsview names them for the phone.
 func isImagePath(path string) bool {
-	return imageExts[lowerExt(path)]
+	return fsview.IsImage(path)
 }
 
 // isRasterImagePath reports whether path is a picture whose patch is only

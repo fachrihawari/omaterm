@@ -41,11 +41,22 @@ let term = null;        // open terminal: its pane id, refresh and teardown
 let shell = null;       // shell DOM elements
 let rowsShown = null;   // the sessions the list showed, so a new one rises in; null before the first list
 let rowsNow = new Set();
+let linesOpen = new Set(); // the sessions whose row's line shows whole
 const touch = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+// A touch screen of any width has the key bar, Compose and the answer bar.
+document.documentElement.classList.toggle("touch", touch);
 
 // Dynamic modules loaded asynchronously
 const keysPromise = import("./keys.js").catch(() => null);
 const composePromise = import("./compose.js").catch(() => null);
+// The files and changes views load the first time one opens.
+let browsePromise = null;
+const loadBrowse = () => (browsePromise ??= import("./browse.js").catch(() => null));
+// The answer bar loads the first time a terminal opens.
+let answerPromise = null;
+const loadAnswer = () => (answerPromise ??= import("./answer.js").catch(() => null));
+// Notifications: the bell in the list's footer (push.js), once loaded.
+let push = null;
 
 // SVG dictionary
 const S = (d, extra = "") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
@@ -57,6 +68,8 @@ const IC = {
   compose: S('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>'),
   signout: S('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'),
   term: S('<path d="M4 17l6-5-6-5M12 19h8"/>'),
+  files: S('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
+  close: S('<path d="M18 6 6 18M6 6l12 12"/>'),
   claude: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.6 6.2L19 5l-3.2 5.4L22 12l-6.2 1.6L19 19l-5.4-3.2L12 22l-1.6-6.2L5 19l3.2-5.4L2 12l6.2-1.6L5 5l5.4 3.2z"/></svg>`,
   codex: S('<path d="M12 2l8.5 5v10L12 22l-8.5-5V7z"/><path d="M8 10l3 2-3 2M13 15h3"/>'),
   bun: S('<path d="M3 14c0-4.5 4-8 9-8s9 3.5 9 8c0 2.8-4 5-9 5s-9-2.2-9-5z"/><path d="M9 13h.01M15 13h.01M10.5 15.5c.8.6 2.2.6 3 0"/>'),
@@ -174,6 +187,8 @@ function showPair(message = "") {
   shell = null;
   closeTerm();
   if (events) { events.onclose = null; events.close(); events = null; }
+  clearTimeout(eventsTimer);
+  forget(); // after the terminal, whose compose box keeps its draft as it goes
   document.title = "omaterm";
 
   const input = h("input", {
@@ -214,7 +229,10 @@ async function pair(code) {
 
 // --- state & events --------------------------------------------------------
 
+let eventsTimer = 0;
+
 function connectEvents() {
+  clearTimeout(eventsTimer);
   const ws = new WebSocket(wsURL("/api/events"));
   events = ws;
   ws.onopen = () => { eventsRetry = 500; };
@@ -234,15 +252,46 @@ function connectEvents() {
     if (e.code === 4401) { showPair("This browser was signed out."); return; }
     offline = true;
     render();
-    setTimeout(async () => {
-      try { state = await api("/api/state"); offline = false; connectEvents(); render(); } catch { if (paired) connectEventsLater(); }
+    eventsTimer = setTimeout(async () => {
+      try { state = await api("/api/state"); offline = false; if (!events) connectEvents(); render(); } catch { if (paired) connectEventsLater(); }
     }, eventsRetry);
     eventsRetry = Math.min(eventsRetry * 2, 8000);
   };
 }
 
 function connectEventsLater() {
-  setTimeout(() => { if (!events && paired) connectEvents(); }, eventsRetry);
+  eventsTimer = setTimeout(() => { if (!events && paired) connectEvents(); }, eventsRetry);
+}
+
+// wake runs as the page comes back to the front, or the phone back on a
+// network. A socket that died meanwhile may still say it is open, so the
+// open terminal checks its own at once, for a Send tapped right after,
+// and the events open again, which costs one state.
+let woke = 0;
+function wake() {
+  if (!paired || document.visibilityState !== "visible") return;
+  term?.check();
+  clearTimeout(woke);
+  woke = setTimeout(() => {
+    if (!paired) return;
+    if (events) { const old = events; events = null; old.onclose = old.onmessage = null; old.close(); }
+    eventsRetry = 500;
+    connectEvents();
+  }, 100);
+}
+document.addEventListener("visibilitychange", wake);
+addEventListener("online", wake);
+addEventListener("pageshow", (e) => { if (e.persisted) wake(); });
+
+// forget wipes what the phone keeps of omaterm as it is signed out: the
+// compose drafts and Recent prompts. Its look stays, and the views'
+// choices: the key bar, a diff's wrap, New Agent's.
+function forget() {
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith("omaterm.") && !/^omaterm\.(theme|keybar|diff\.wrap|newagent)$/.test(k)) localStorage.removeItem(k);
+    }
+  } catch {}
 }
 
 function wsURL(path) {
@@ -257,8 +306,20 @@ function workingCount() {
   return state ? state.sessions.filter((s) => s.lead && s.lead.status === "working").length : 0;
 }
 
+// done is a session whose agent finished a turn the user has not seen:
+// idle and unread. A waiting or failed one needs them, and counts there.
+function done(s) {
+  return Boolean(s.lead?.unread && s.lead.status === "idle");
+}
+
 function doneCount() {
-  return state ? state.sessions.filter((s) => s.lead && (s.lead.unread || s.lead.status === "done")).length : 0;
+  return state ? state.sessions.filter(done).length : 0;
+}
+
+// needsYou is a session waiting for the user, or failed.
+function needsYou(s) {
+  const st = s.lead?.status;
+  return !s.process && terminals(s).length > 0 && (st === "waiting" || st === "error" || st === "failed");
 }
 
 function render() {
@@ -322,20 +383,23 @@ function processState(p) {
   return "none";
 }
 
+// waitingText words what a waiting pane waits for: its message, else its
+// kind.
+function waitingText(p) {
+  if (p.message) return p.message;
+  switch (p.kind) {
+    case "permission": return "Needs permission";
+    case "question": return "Has a question";
+    case "auth": return "Needs sign-in";
+  }
+  return "Needs you";
+}
+
 function statusChip(p) {
   if (!p) return null;
   switch (p.status) {
     case "waiting": {
-      let text = p.message;
-      if (!text) {
-        switch (p.kind) {
-          case "permission": text = "Needs permission"; break;
-          case "question": text = "Has a question"; break;
-          case "auth": text = "Needs sign-in"; break;
-          default: text = "Needs you"; break;
-        }
-      }
-      return h("div", { class: "schip att" }, text);
+      return h("div", { class: "schip att" }, waitingText(p));
     }
     case "working": {
       let text = p.progress >= 0 ? `${p.progress}%` : (p.message || (p.since ? ago(p.since) : "Working"));
@@ -375,6 +439,12 @@ function terminals(s) {
   return (s.panes ?? []).filter((p) => !p.url);
 }
 
+// leadOf is the pane a session opens at: its lead, unless that is a
+// browser pane, which the page can't show; then its first terminal.
+function leadOf(s) {
+  return (s.lead && s.lead.id && !s.lead.url) ? s.lead : terminals(s)[0];
+}
+
 // --- shell layout ----------------------------------------------------------
 
 function showShell() {
@@ -399,6 +469,8 @@ function showShell() {
   const root = h("div", { class: "shell" }, sidebar, mainView);
   app.replaceChildren(root);
   shell = { root, list, foot, waitingBadge, pills, content };
+  if (push) push.refresh();
+  else import("./push.js").then((mod) => { push ??= mod.mountPush({ api, h }); renderSidebar(); }).catch(() => {});
 }
 
 function renderPills() {
@@ -411,7 +483,7 @@ function renderPills() {
   const tabs = [];
   for (const s of projSessions) {
     const panes = terminals(s);
-    const lead = (s.lead && s.lead.id) ? s.lead : panes[0];
+    const lead = leadOf(s);
     const here = panes.some((p) => p.id === open);
     // A process's tab shows its state as its row does, a running one a
     // green dot.
@@ -459,6 +531,16 @@ function renderSidebar() {
     items.push(h("p", { class: "empty" }, "Loading…"));
   } else if (!state.projects.length) {
     items.push(h("p", { class: "empty" }, "No projects yet. Open a folder in omaterm to start."));
+  }
+
+  // Needs you: the sessions that wait for the user or failed, across the
+  // projects, the longest waiting first; each stays in its project too.
+  const needs = (state?.sessions ?? []).filter(needsYou).sort((a, b) => (a.lead.since || 0) - (b.lead.since || 0));
+  if (needs.length) {
+    items.push(h("section", { class: "project-group needs" },
+      h("div", { class: "proj" }, statusIcon("waiting", "s12"), h("span", { class: "name" }, "Needs you")),
+      needs.map((s) => sessionRow(s, state.projects.find((p) => p.id === s.project), open, true)),
+    ));
   }
 
   for (const proj of state?.projects ?? []) {
@@ -512,7 +594,7 @@ function renderSidebar() {
   if (nDone > 0) {
     footChips.push(h("div", {
       class: "chipc", title: "Done sessions",
-      onclick: () => jumpToSession((s) => s.lead?.unread || s.lead?.status === "done"),
+      onclick: () => jumpToSession(done),
     }, statusIcon("done", "s12"), ` ${nDone}`));
   }
 
@@ -520,10 +602,14 @@ function renderSidebar() {
   if (offline) {
     footElements.push(h("span", { class: "offline" }, "Reconnecting…"));
   }
+  if (push) {
+    footElements.push(push.el);
+    push.badge(nWaiting);
+  }
   footElements.push(h("button", {
     class: "link", title: "Sign out this browser",
-    onclick: async () => { if (confirm("Sign out this browser?")) { await api("/api/logout", {}); showPair(); } },
-  }, icon("signout", "s12"), "Sign out"));
+    onclick: async () => { if (confirm("Sign out this browser?")) { await push?.forget(); await api("/api/logout", {}); showPair(); } },
+  }, icon("signout", "s12"), h("span", { class: "lbl" }, "Sign out")));
 
   foot.replaceChildren(...footElements);
 }
@@ -532,7 +618,7 @@ function jumpToSession(filterFn) {
   if (!state) return;
   const target = state.sessions.find(filterFn);
   if (target) {
-    const pane = target.lead?.id || terminals(target)[0]?.id;
+    const pane = leadOf(target)?.id;
     if (pane) location.hash = "#/pane/" + encodeURIComponent(pane);
   }
 }
@@ -545,15 +631,19 @@ function fresh(s) {
   return rowsShown && !rowsShown.has(id) ? " fresh" : "";
 }
 
-function sessionRow(s, proj, open) {
+// sessionRow is a session's row; where, in Needs you, also names its
+// project.
+function sessionRow(s, proj, open, where = false) {
   const panes = terminals(s);
-  const lead = (s.lead && s.lead.id && !s.lead.url) ? s.lead : panes[0];
+  const lead = leadOf(s);
   const st = statusState(lead);
   const prog = programType(lead);
   const here = panes.some((p) => p.id === open);
 
-  const branch = s.worktree?.branch || (lead.dir && lead.dir !== proj.dir ? shortDir(lead.dir, proj.dir) : "");
-  const sub = lead.summary || lead.message || "";
+  let branch = s.worktree?.branch || (lead.dir && lead.dir !== proj?.dir ? shortDir(lead.dir, proj?.dir) : "");
+  if (where) branch = [proj?.name, branch].filter(Boolean).join(" · ");
+  const sub = rowLine(lead);
+  const whole = linesOpen.has(s.id);
 
   return h("div", {
     class: "row" + (here ? " sel" : "") + (lead.unread ? " unread" : "") + (lead.status === "exited" ? " exited" : "") + fresh(s),
@@ -565,11 +655,34 @@ function sessionRow(s, proj, open) {
         h("span", { class: "nm" }, s.name || label(lead)),
         branch ? h("span", { class: "br" }, branch) : null,
       ),
-      sub ? h("span", { class: "sub" }, sub) : null,
+      sub ? h("span", { class: "sub" + (whole ? " whole" : ""), onclick: (e) => openLine(e, s.id) }, sub) : null,
     ),
     lead.since ? h("span", { class: "tm" }, ago(lead.since)) : null,
     statusIcon(st, "s14"),
   );
+}
+
+// rowLine is what a row says under its name: the question its agent
+// waits on; else whose answer it waits for, or the messages that wait
+// for it; else its last word.
+function rowLine(p) {
+  if (p.status === "waiting") return waitingText(p);
+  if (p.asking) {
+    const to = paneByID(p.asking);
+    return `Waiting for ${to ? to.session.name || label(to.pane) : "another agent"}'s answer`;
+  }
+  if (p.inbox > 0) return `${p.inbox} message${p.inbox === 1 ? " waits" : "s wait"}` + (p.held ? `: ${p.held}` : "");
+  return p.summary || p.message || "";
+}
+
+// openLine shows a row's line whole, in place, or cut to one again; a
+// line that fits opens the session, as the rest of the row does.
+function openLine(e, id) {
+  const el = e.currentTarget;
+  if (!linesOpen.has(id) && el.scrollWidth <= el.clientWidth) return;
+  e.stopPropagation();
+  if (!linesOpen.delete(id)) linesOpen.add(id);
+  renderSidebar();
 }
 
 // linkHost is the host of a process's link, as the pill shows it.
@@ -579,23 +692,26 @@ function linkHost(link) {
 
 function processRow(s, proj, open) {
   const panes = terminals(s);
-  const lead = (s.lead && s.lead.id) ? s.lead : panes[0];
+  const lead = leadOf(s);
   const here = panes.some((p) => p.id === open);
   const proc = s.proc;
   const pst = processState(proc ? { status: proc.status } : lead);
 
-  // Only a web address is a link: the state is data, not trusted markup.
+  // Only a share link is a link: a Dev URL (https://shop.localhost) and a
+  // port are the computer's own, which on a phone is the phone's. The
+  // state is data, not trusted markup, so a link must be a web address.
   const web = (u) => (typeof u === "string" && /^https?:\/\//.test(u) ? u : "");
-  const link = web(proc?.share) || web(proc?.link);
-  const port = proc?.port || lead.port;
+  const link = web(proc?.share);
+  const local = proc?.port ? `:${proc.port}` : web(proc?.link) ? linkHost(proc.link) : "";
   let pill = null;
   if (link) {
     pill = h("a", {
       class: "pill mono link", href: link, target: "_blank", rel: "noopener noreferrer",
       title: link, onclick: (e) => e.stopPropagation(),
     }, linkHost(link));
-  } else if (port) {
-    pill = h("span", { class: "pill mono" }, `:${port}`);
+  } else if (local) {
+    pill = h("span", { class: "pill mono", title: "Opens on the computer only" },
+      local, h("span", { class: "where" }, " · on the computer"));
   }
 
   let statusEl = null;
@@ -621,7 +737,18 @@ function processRow(s, proj, open) {
   );
 }
 
+// newSession opens the New Agent sheet (newagent.js, loaded the first
+// time) for the project; without it, '+' makes a shell as it did.
+let newAgentPromise = null;
 async function newSession(project) {
+  const mod = await (newAgentPromise ??= import("./newagent.js").catch(() => null));
+  if (mod && state) {
+    mod.openNewAgent({
+      project, projects: state.projects, api, h,
+      open: (pane) => { location.hash = "#/pane/" + encodeURIComponent(pane); },
+    });
+    return;
+  }
   try {
     const made = await api("/api/sessions", { project });
     location.hash = "#/pane/" + encodeURIComponent(made.pane);
@@ -826,18 +953,39 @@ function showTerm(id) {
   const modChip = h("div", { class: "schip mods", hidden: true });
 
   let composeBox = null;
+  // How many prompts wait for the agent to be free, which Compose lists.
+  const queuedBadge = h("span", { class: "badge", hidden: true });
   const composeBtn = h("button", {
     class: "ib btn-compose", hidden: true, title: "Compose prompt", "aria-label": "Compose prompt",
     onclick: () => {
       composeBox?.open();
     },
-  }, icon("compose", "s14"));
+  }, icon("compose", "s14"), queuedBadge);
+
+  // The pane's output as text, and the session's files and changes, read
+  // in the card in the terminal's place. One button opens them, as last
+  // seen; there, the header trades the terminal's status and Compose for a
+  // switch between the three, and a close that goes back to the terminal.
+  const paneHash = `#/pane/${encodeURIComponent(id)}`;
+  const browseBtn = h("a", {
+    class: "ib btn-view btn-browse", href: paneHash + "/files", title: "Output, Files and Changes", "aria-label": "Output, Files and Changes",
+  }, icon("files", "s14"));
+  const segOutput = h("a", { href: paneHash + "/output" }, "Output");
+  const segFiles = h("a", { href: paneHash + "/files" }, "Files");
+  const segChanges = h("a", { href: paneHash + "/changes" }, "Changes");
+  const seg = h("nav", { class: "bv-seg", "aria-label": "Output, Files or Changes" }, segOutput, segFiles, segChanges);
+  const closeBtn = h("a", {
+    class: "ib btn-view btn-close", href: paneHash, title: "Back to the terminal", "aria-label": "Back to the terminal",
+  }, icon("close", "s14"));
 
   const header = h("header", { class: "ph" },
     backBtn, grip, branchChip, tabsRow,
     h("span", { class: "sp" }),
     modChip,
     statusChipEl,
+    seg,
+    browseBtn,
+    closeBtn,
     composeBtn,
   );
 
@@ -846,10 +994,12 @@ function showTerm(id) {
   const note = h("div", { class: "term-note", hidden: true });
 
   const composeSlot = h("div", { class: "compose-slot" });
+  const answerSlot = h("div", { class: "answer-slot" });
   const keybarSlot = h("div", { class: "keybar-slot" });
-  const bottomBar = h("div", { class: "term-bottom" }, composeSlot, keybarSlot);
+  const bottomBar = h("div", { class: "term-bottom" }, composeSlot, answerSlot, keybarSlot);
 
-  const card = h("div", { class: "pane" }, header, wrap, note, bottomBar);
+  const view = h("div", { class: "pane-view" });
+  const card = h("div", { class: "pane" }, header, wrap, view, note, bottomBar);
   shell.content.replaceChildren(card);
 
   const xt = new Terminal({
@@ -864,38 +1014,117 @@ function showTerm(id) {
   const fit = new FitAddon.FitAddon();
   xt.loadAddon(fit);
 
-  let ws = null, closed = false, retry = 500, gone = false, sized = false;
+  let ws = null, closed = false, retry = 500, gone = false, sized = false, retryTimer = 0;
+  // pinged is the wait for the socket's pong (check); link, the header's
+  // note while the socket is down; welcomed, that the pane showed once.
+  let pinged = 0, link = "", welcomed = false;
 
   const send = (bytes) => { if (ws && ws.readyState === 1) ws.send(frame("i", bytes)); };
   const sendText = (s) => send(enc.encode(s));
   // sendKey and sendPaste tell whether the frame went: the compose box
-  // keeps its text when it did not.
+  // keeps its text when it did not. While the socket is being checked it
+  // may be dead, which would take the text and say nothing.
   const sendFrame = (kind, s) => {
-    if (!ws || ws.readyState !== 1) return false;
+    if (!ws || ws.readyState !== 1 || pinged) return false;
     ws.send(frame(kind, enc.encode(s)));
     return true;
   };
   const sendKey = (k) => sendFrame("k", k);
   const sendPaste = (p) => sendFrame("p", p);
+
+  // ready resolves to whether the socket carries, once its check is over
+  // (a pong, or none in 3 s) or a new one is in: Compose waits for it, as
+  // people tap Send right after unlocking.
+  let readyWaits = [];
+  const settle = (ok) => { const waits = readyWaits; readyWaits = []; for (const done of waits) done(ok); };
+  const ready = () => {
+    if (ws?.readyState === 1 && !pinged) return Promise.resolve(true);
+    if (!ws || closed) return Promise.resolve(false);
+    return new Promise((done) => {
+      const t = setTimeout(() => done(false), 3000);
+      readyWaits.push((ok) => { clearTimeout(t); done(ok); });
+    });
+  };
   const appCursor = () => Boolean(xt.modes?.applicationCursorKeysMode);
 
   const setNote = (text) => { note.hidden = !text; note.textContent = text || ""; };
+  const setLink = (text) => { link = text; refresh(); };
 
+  // typing tells that the phone's keyboard may be up: the terminal or the
+  // compose box takes text.
+  const typing = () => touch && /^(TEXTAREA|INPUT)$/.test(document.activeElement?.tagName || "");
+  let kept = false, liftFrame = 0;
+
+  // fill sizes the pane to the card. The phone's keyboard, coming and
+  // going, changes only the height: the pane keeps its rows, and the
+  // screen lifts to keep the cursor in sight. Fewer rows would have the
+  // agent redraw, and the whole scrollback come again over the phone's
+  // link, each time the keyboard opens.
   const fill = () => {
     const dims = fit.proposeDimensions();
     if (!dims || !dims.cols || !dims.rows) return;
-    if (dims.cols !== xt.cols || dims.rows !== xt.rows) xt.resize(dims.cols, dims.rows);
+    const rows = typing() && dims.cols === xt.cols && dims.rows < xt.rows ? xt.rows : dims.rows;
+    kept = rows > dims.rows;
+    if (dims.cols !== xt.cols || rows !== xt.rows) xt.resize(dims.cols, rows);
+    lift();
     if (!ws || ws.readyState !== 1) return;
     const cell = xt._core?._renderService?.dimensions?.css?.cell;
-    ws.send(frame("r", uint16s(dims.cols, dims.rows, cell?.width ?? 0, cell?.height ?? 0)));
+    ws.send(frame("r", uint16s(dims.cols, rows, cell?.width ?? 0, cell?.height ?? 0)));
+  };
+
+  // lift raises the screen over a keyboard that covers its foot, as far
+  // as the cursor's row needs, while the pane keeps its rows.
+  const lift = () => {
+    const screen = host.querySelector(".xterm-screen");
+    let y = 0;
+    if (kept && screen) {
+      const over = screen.offsetHeight - host.clientHeight;
+      const row = screen.offsetHeight / xt.rows;
+      y = Math.max(0, Math.min(over, (xt.buffer.active.cursorY + 1) * row - host.clientHeight));
+    }
+    host.toggleAttribute("data-lift", kept);
+    host.style.setProperty("--lift", `${-Math.round(y)}px`);
+  };
+  const liftSoon = () => {
+    if (kept && !liftFrame) liftFrame = requestAnimationFrame(() => { liftFrame = 0; lift(); });
+  };
+
+  // check asks the socket for a pong, as the page comes back: one that
+  // died meanwhile may still say it is open, and takes what is typed
+  // into it without a word. With no answer in 3 s, it makes way for a
+  // new one.
+  const check = () => {
+    if (closed || gone) return;
+    if (!ws) { connect(); return; }
+    if (ws.readyState !== 1 || pinged) return;
+    const sock = ws;
+    sock.send("ping");
+    pinged = setTimeout(() => {
+      pinged = 0;
+      if (ws !== sock || closed) return;
+      settle(false);
+      sock.onclose = sock.onmessage = null;
+      sock.close();
+      ws = null;
+      setLink("Reconnecting…");
+      connect();
+    }, 3000);
   };
 
   const connect = () => {
+    clearTimeout(retryTimer);
+    clearTimeout(pinged);
+    pinged = 0;
     const sock = new WebSocket(wsURL(`/api/panes/${encodeURIComponent(id)}/attach`));
     sock.binaryType = "arraybuffer";
     ws = sock;
-    let welcomed = false;
     sock.onmessage = (e) => {
+      if (e.data === "pong") {
+        clearTimeout(pinged);
+        pinged = 0;
+        settle(true);
+        return;
+      }
       if (typeof e.data === "string") {
         const w = JSON.parse(e.data);
         xt.reset();
@@ -904,6 +1133,8 @@ function showTerm(id) {
         sized = false;
         retry = 500;
         setNote("");
+        setLink("");
+        settle(true);
         return;
       }
       const b = new Uint8Array(e.data);
@@ -922,14 +1153,25 @@ function showTerm(id) {
     sock.onclose = (e) => {
       if (ws !== sock || closed) return;
       ws = null;
+      clearTimeout(pinged);
+      pinged = 0;
+      settle(false);
       if (e.code === 4401) { showPair("This browser was signed out."); return; }
-      if (e.code === 4410) { setNote(e.reason); return; }
-      if (e.code === 4404 || gone) { setNote(gone ? "This session has ended." : "This session is gone."); return; }
-      setNote(welcomed ? "Reconnecting…" : "Connecting…");
-      setTimeout(async () => {
+      // A stopped process has no terminal: its last output shows instead.
+      if (e.code === 4410) {
+        setLink("");
+        setNote(e.reason);
+        if (!card.dataset.view) location.replace(paneHash + "/output");
+        return;
+      }
+      if (e.code === 4404 || gone) { setLink(""); setNote(gone ? "This session has ended." : "This session is gone."); return; }
+      // In the header, not under the terminal: a note there would shrink
+      // it, and resize the pane.
+      setLink(welcomed ? "Reconnecting…" : "Connecting…");
+      retryTimer = setTimeout(async () => {
         if (closed) return;
         try { await api("/api/state"); } catch (err) { if (err.message === "not paired") return; }
-        connect();
+        if (!closed && !ws) connect();
       }, retry);
       retry = Math.min(retry * 2, 8000);
     };
@@ -1009,9 +1251,23 @@ function showTerm(id) {
   composePromise.then((mod) => {
     if (mod?.mountCompose && composeSlot.isConnected) {
       composeSlot.replaceChildren();
-      composeBox = mod.mountCompose(composeSlot, { sendPaste, sendKey, id });
+      composeBox = mod.mountCompose(composeSlot, {
+        sendPaste, sendKey, ready, id, h,
+        signedOut: () => showPair("This browser was signed out."),
+        onQueued: (n) => { queuedBadge.hidden = !n; queuedBadge.textContent = n ? String(n) : ""; },
+      });
+      composeBox.update?.(paneByID(id)?.pane);
       composeBtn.hidden = false;
     }
+  });
+
+  // While the agent waits, its question and answers over the key bar;
+  // while it works, a Stop over the terminal.
+  let answer = null;
+  loadAnswer().then((mod) => {
+    if (!mod?.mountAnswer || closed) return;
+    answer = mod.mountAnswer(answerSlot, wrap, { h, xt, sendText: (s) => sendFrame("i", s), sendKey });
+    refresh();
   });
 
   xt.open(host);
@@ -1027,9 +1283,19 @@ function showTerm(id) {
     resizeTimer = setTimeout(fill, 100);
   });
   observer.observe(host);
+  xt.onCursorMove(liftSoon);
 
-  const onVisible = () => { if (document.visibilityState === "visible" && !ws && !closed && !gone) connect(); };
-  document.addEventListener("visibilitychange", onVisible);
+  // The phone showing the pane sees its session: its unread marks go,
+  // here and on the desktop. Only while the page is in sight, as a tab in
+  // the background reconnects too. (Coming back, wake checks the socket.)
+  let seeing = false;
+  const markSeen = () => {
+    const cur = paneByID(id);
+    if (seeing || closed || document.visibilityState !== "visible" || !cur?.session.panes?.some((p) => p.unread)) return;
+    seeing = true;
+    api(`/api/panes/${encodeURIComponent(id)}/seen`, {}).catch(() => {}).finally(() => { seeing = false; });
+  };
+  document.addEventListener("visibilitychange", markSeen);
 
   const refresh = () => {
     const cur = paneByID(id);
@@ -1064,24 +1330,71 @@ function showTerm(id) {
       tabsRow.hidden = true;
     }
 
-    const sc = statusChip(cur.pane);
+    // While a socket is down, what the header said may be old news.
+    const sc = link || offline ? h("div", { class: "schip offline" }, link || "Reconnecting…") : statusChip(cur.pane);
     statusChipEl.replaceChildren(sc ? sc : "");
+    answer?.update(cur.pane, cur.session);
+    markSeen();
+    composeBox?.update?.(cur.pane);
+
+    // A turn that ended may have changed files the changes view shows.
+    if (lastStatus === "working" && cur.pane.status !== "working") browse?.turnEnded();
+    lastStatus = cur.pane.status;
 
     const waiting = waitingCount();
     document.title = (waiting ? `(${waiting}) ` : "") + gripTitle.textContent + " · omaterm";
+  };
+
+  // showView shows the output, files or changes view kind at path, or,
+  // with no kind, the terminal again.
+  let browse = null;
+  let lastStatus = "";
+  // ask takes a diff's line to Compose, over the terminal it goes to: back
+  // goes back to the diff.
+  const ask = (text) => {
+    if (!composeBox?.prefill) return;
+    history.pushState(null, "", paneHash);
+    showView("");
+    composeBox.prefill(text);
+  };
+  const showView = (kind, path) => {
+    const group = { output: "output", files: "files", file: "files", changes: "changes", diff: "changes" }[kind];
+    if (group) browseBtn.href = paneHash + "/" + group;
+    segOutput.classList.toggle("on", group === "output");
+    segFiles.classList.toggle("on", group === "files");
+    segChanges.classList.toggle("on", group === "changes");
+    if (!kind) {
+      delete card.dataset.view;
+      if (!touch) xt.focus();
+      return;
+    }
+    card.dataset.view = kind;
+    xt.blur(); // the phone's keyboard goes away with the terminal
+    loadBrowse().then((mod) => {
+      if (!mod || closed || card.dataset.view !== kind) return;
+      browse ??= mod.mountBrowse(view, { id, api, h, ask });
+      browse.show(kind, path);
+    });
   };
 
   term = {
     id,
     xt,
     refresh,
+    showView,
+    check,
     close() {
       closed = true;
       observer.disconnect();
       clearTimeout(resizeTimer);
-      document.removeEventListener("visibilitychange", onVisible);
+      document.removeEventListener("visibilitychange", markSeen);
+      clearTimeout(retryTimer);
+      clearTimeout(pinged);
+      settle(false);
+      cancelAnimationFrame(liftFrame);
       keyBar?.destroy();
       composeBox?.destroy();
+      answer?.destroy();
       if (ws) { ws.onclose = null; ws.close(); }
       xt.dispose();
     },
@@ -1096,11 +1409,17 @@ function showTerm(id) {
 
 // --- routes & start --------------------------------------------------------
 
+// route shows what the hash names: a pane, #/pane/<id>, or one of its
+// views, #/pane/<id>/output, …/files/<dir>, …/file/<path>, …/changes and
+// …/changes/<path> (a file's diff); else the list.
 function route() {
   if (!paired) return;
-  const m = location.hash.match(/^#\/pane\/(.+)$/);
-  if (m) showTerm(decodeURIComponent(m[1]));
-  else { showEmpty(); renderSidebar(); }
+  const m = location.hash.match(/^#\/pane\/([^/]+)(?:\/(output|files|file|changes)(?:\/(.+))?)?$/);
+  if (!m) { showEmpty(); renderSidebar(); return; }
+  showTerm(decodeURIComponent(m[1]));
+  const path = m[3] ? decodeURIComponent(m[3]) : "";
+  const kind = m[2] === "changes" && path ? "diff" : m[2] || "";
+  term?.showView(kind, path);
 }
 
 async function start() {
@@ -1132,6 +1451,10 @@ async function start() {
 }
 
 addEventListener("hashchange", route);
+
+// The rows' "3m" and the header's age move on with the clock, not only
+// as a new state comes.
+setInterval(() => { if (document.visibilityState === "visible") render(); }, 60_000);
 
 // The on-screen keyboard: where it lies over the page (iOS), --kb is its
 // height, which the page and the compose sheet keep clear of. Where it

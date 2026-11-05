@@ -50,6 +50,9 @@ type Device struct {
 	// Hash is the SHA-256 of the cookie's secret; the secret itself is
 	// kept only by the browser.
 	Hash string `json:"hash"`
+	// Push is where its notifications go, nil when it asked for none.
+	// Signed out or expired, the device takes it with it.
+	Push *Subscription `json:"push,omitempty"`
 }
 
 type code struct {
@@ -107,6 +110,8 @@ type authFile struct {
 	Config  Config   `json:"config"`
 	Codes   []code   `json:"codes,omitempty"`
 	Devices []Device `json:"devices,omitempty"`
+	// VAPID is the private key that signs the pushes, base64url (push.go).
+	VAPID string `json:"vapid,omitempty"`
 }
 
 // Store keeps web access's config, the pairing codes and the paired

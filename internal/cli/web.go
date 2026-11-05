@@ -152,8 +152,12 @@ func webCmd(args []string) error {
 			return nil
 		}
 		for _, d := range devices {
-			fmt.Printf("%s  %-22s paired %s, last seen %s\n", d.ID, d.Name,
-				time.UnixMilli(d.Created).Format("2006-01-02"), time.UnixMilli(d.LastSeen).Format("2006-01-02 15:04"))
+			notified := ""
+			if d.Push != nil {
+				notified = ", notified"
+			}
+			fmt.Printf("%s  %-22s paired %s, last seen %s%s\n", d.ID, d.Name,
+				time.UnixMilli(d.Created).Format("2006-01-02"), time.UnixMilli(d.LastSeen).Format("2006-01-02 15:04"), notified)
 		}
 		return nil
 	case "revoke":

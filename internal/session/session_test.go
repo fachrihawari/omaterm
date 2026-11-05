@@ -63,6 +63,28 @@ func TestViewedSession(t *testing.T) {
 	}
 }
 
+// Seeing a session clears its panes' unread marks, and only its own, but
+// leaves the viewed session be: what comes after is unread again.
+func TestSeenSession(t *testing.T) {
+	r := NewRegistry()
+	r.SetViewed("s9")
+	p := startExec(t, r, "p1", "s1", `printf '\033]7501;state=error\007'; sleep 0.5; printf '\033]7501;state=blocked\007'; sleep 5`)
+	other := startExec(t, r, "p2", "s2", `printf '\033]7501;state=error\007'; sleep 5`)
+	waitFor(t, p, "failed", func(i Info) bool { return i.Status == Failed && i.Unread })
+	waitFor(t, other, "failed", func(i Info) bool { return i.Status == Failed && i.Unread })
+	r.Seen("s1")
+	if p.Info().Unread {
+		t.Fatal("still unread once seen")
+	}
+	if !other.Info().Unread {
+		t.Fatal("another session was seen too")
+	}
+	if v := r.Viewed(); v != "s9" {
+		t.Fatalf("viewed is %q", v)
+	}
+	waitFor(t, p, "unread again", func(i Info) bool { return i.Status == Waiting && i.Unread })
+}
+
 // A spinner title means work; work going quiet ends after idleHold.
 func TestTitleSpinner(t *testing.T) {
 	r := NewRegistry()

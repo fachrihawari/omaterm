@@ -15,8 +15,9 @@ import (
 
 type sent struct{ title, body, session string }
 
-// notifyDaemon is a daemon whose notifications go to a channel.
-func notifyDaemon(t *testing.T) (*Daemon, string, chan sent) {
+// notifyDaemon is a daemon whose notifications go to a channel; opts
+// change its options.
+func notifyDaemon(t *testing.T, opts ...func(*Options)) (*Daemon, string, chan sent) {
 	t.Helper()
 	t.Setenv("SHELL", "/bin/sh")
 	dir, err := os.MkdirTemp("", "omn")
@@ -30,8 +31,12 @@ func notifyDaemon(t *testing.T) (*Daemon, string, chan sent) {
 	model.Save(stateFile, st)
 	ch := make(chan sent, 4)
 	socket := filepath.Join(dir, "d.sock")
-	d, err := Start(Options{Socket: socket, StateDir: dir, StateFile: stateFile, IdleExit: time.Minute, Version: "test",
-		Notifier: func(title, body, sid string) { ch <- sent{title, body, sid} }})
+	o := Options{Socket: socket, StateDir: dir, StateFile: stateFile, IdleExit: time.Minute, Version: "test",
+		Notifier: func(title, body, sid string) { ch <- sent{title, body, sid} }}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	d, err := Start(o)
 	if err != nil {
 		t.Fatal(err)
 	}
