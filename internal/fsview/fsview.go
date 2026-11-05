@@ -68,19 +68,30 @@ func IsImage(path string) bool {
 	return imageExts[strings.ToLower(filepath.Ext(path))]
 }
 
-// Local returns the file of root that the slash-separated rel names, ""
-// or "." being root itself. It refuses an absolute path, one through ..,
-// one into .git, and one whose links lead outside root.
-func Local(root, rel string) (string, error) {
+// Clean returns the slash-separated rel cleaned, "" for the root itself,
+// refusing an absolute path, one through .., and one into .git. It reads
+// nothing: a file that is gone, as a deleted one in a diff, passes.
+func Clean(rel string) (string, error) {
 	if filepath.Separator == '\\' {
 		rel = strings.ReplaceAll(rel, `\`, "/")
 	}
-	clean := path.Clean("/" + rel)[1:]
 	if path.IsAbs(rel) || filepath.IsAbs(filepath.FromSlash(rel)) || slices.Contains(strings.Split(rel, "/"), "..") {
 		return "", ErrBadPath
 	}
+	clean := path.Clean("/" + rel)[1:]
 	if slices.ContainsFunc(strings.Split(clean, "/"), func(s string) bool { return strings.EqualFold(s, ".git") }) {
 		return "", ErrBadPath
+	}
+	return clean, nil
+}
+
+// Local returns the file of root that the slash-separated rel names, ""
+// or "." being root itself. It refuses what Clean does, and a path whose
+// links lead outside root.
+func Local(root, rel string) (string, error) {
+	clean, err := Clean(rel)
+	if err != nil {
+		return "", err
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -112,7 +123,7 @@ func List(root, rel string) (Dir, error) {
 	if err != nil {
 		return Dir{}, err
 	}
-	prefix := strings.Trim(path.Clean("/" + rel)[1:], "/")
+	prefix, _ := Clean(rel) // Local took it
 	ignored := service.Ignored(root)
 	muted := func(p string) bool {
 		for p != "" && p != "." {
@@ -174,7 +185,8 @@ func Read(root, rel string) (File, error) {
 	if st.IsDir() {
 		return File{}, ErrBadPath
 	}
-	f := File{Path: strings.Trim(path.Clean("/" + rel)[1:], "/"), Size: st.Size()}
+	clean, _ := Clean(rel) // Local took it
+	f := File{Path: clean, Size: st.Size()}
 	switch {
 	case IsImage(full):
 		f.Kind = "image"
