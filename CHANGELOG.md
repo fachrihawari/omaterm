@@ -3,6 +3,42 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.14.1
+
+Fixes for web access from a phone: the computer keeps its terminal's width,
+a row opens where you tap it, and a link that stays the same.
+
+### A link that stays
+
+- **Tailscale Funnel:** a public link, `https://<computer>.<tailnet>.ts.net`,
+  that stays the same, with nothing to install on the phone. Choose
+  **Tailscale Funnel** in Settings › Web Access, or run
+  `omaterm web on --tunnel funnel`. Funnel is turned on once for your
+  tailnet; if it isn't yet, omaterm gives you the link that turns it on.
+- **Cloudflare on your own domain:** create a tunnel in Cloudflare with a
+  public hostname to omaterm (`http://localhost:7370`), then give omaterm
+  its domain and token. Settings has a field for each, or run
+  `omaterm web on --hostname term.example.com --token -`. The token is
+  kept on this computer only, and is never shown.
+- Cloudflare without your domain still works, but its link changes each
+  time the tunnel starts: after a restart, the phone pairs again. Settings
+  now says so.
+
+### The pane's size
+
+- **Whoever types gets the pane's size.** A phone that opened a session
+  took the terminal down to its width on the computer too. Now typing on
+  the computer brings it back to full width, and typing on the phone takes
+  it again.
+- **A locked phone gives the size back at once,** as does a page in the
+  background, and asks for it again when it comes back.
+
+### Fixed
+
+- A tap on a session's row opens it wherever you tap. It used to open
+  only from the name, and a tap on the line under it showed that line
+  whole. A question in **Needs you** now shows on two lines.
+
 ## 0.14.0
 
 The phone is enough while you're away from the computer. It tells you when
