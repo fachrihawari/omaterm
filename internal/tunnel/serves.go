@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -135,17 +136,25 @@ func TrackServes(path string) {
 	serveMu.Unlock()
 }
 
-func readServeLog(path string) []int {
-	var list struct{ Ports []int }
+// served is the file's list: the https ports omaterm serves on, and those
+// of them Funnel opens to the internet, which are turned off as funnels.
+type served struct {
+	Ports   []int
+	Funnels []int `json:",omitempty"`
+}
+
+func readServeLog(path string) served {
+	var list served
 	if b, err := os.ReadFile(path); err == nil {
 		json.Unmarshal(b, &list)
 	}
-	return list.Ports
+	return list
 }
 
-func writeServeLog(path string, ports []int) error {
-	sort.Ints(ports)
-	b, _ := json.Marshal(struct{ Ports []int }{ports})
+func writeServeLog(path string, list served) error {
+	sort.Ints(list.Ports)
+	sort.Ints(list.Funnels)
+	b, _ := json.Marshal(list)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -156,23 +165,33 @@ func writeServeLog(path string, ports []int) error {
 	return os.Rename(tmp, path)
 }
 
-// trackServe notes a port omaterm serves on, or no longer does.
-func trackServe(port int, on bool) {
+// trackServe notes a port omaterm serves on, or through Funnel, or no
+// longer does.
+func trackServe(port int, funnel, on bool) {
 	serveMu.Lock()
 	defer serveMu.Unlock()
 	if servePath == "" {
 		return
 	}
-	var ports []int
-	for _, p := range readServeLog(servePath) {
+	was := readServeLog(servePath)
+	var list served
+	for _, p := range was.Ports {
 		if p != port {
-			ports = append(ports, p)
+			list.Ports = append(list.Ports, p)
+		}
+	}
+	for _, p := range was.Funnels {
+		if p != port {
+			list.Funnels = append(list.Funnels, p)
 		}
 	}
 	if on {
-		ports = append(ports, port)
+		list.Ports = append(list.Ports, port)
+		if funnel {
+			list.Funnels = append(list.Funnels, port)
+		}
 	}
-	if err := writeServeLog(servePath, ports); err != nil {
+	if err := writeServeLog(servePath, list); err != nil {
 		log.Printf("tunnel: keeping the served ports: %v", err)
 	}
 }
@@ -193,17 +212,17 @@ func CleanupServes() ([]int, error) {
 		return nil, nil
 	}
 	listed := readServeLog(path)
-	if len(listed) == 0 {
+	if len(listed.Ports) == 0 {
 		return nil, nil
 	}
 	serves, err := TailscaleServe()
 	if err != nil {
 		// Tailscale isn't there (or signed out): nothing of ours serves.
-		return nil, errors.Join(err, writeServeLog(path, nil))
+		return nil, errors.Join(err, writeServeLog(path, served{}))
 	}
 	var off []int
 	var errs []error
-	for _, port := range listed {
+	for _, port := range listed.Ports {
 		targets := serves[port]
 		if len(targets) == 0 {
 			continue
@@ -215,12 +234,12 @@ func CleanupServes() ([]int, error) {
 		if !ours {
 			continue
 		}
-		if err := serveOff(port); err != nil {
+		if err := serveOff(port, slices.Contains(listed.Funnels, port)); err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		off = append(off, port)
 	}
-	errs = append(errs, writeServeLog(path, nil))
+	errs = append(errs, writeServeLog(path, served{}))
 	return off, errors.Join(errs...)
 }

@@ -653,6 +653,9 @@ type settingsRowOpts struct {
 	link string
 	// mono shows sub in the monospaced font, as a path.
 	mono bool
+	// note is a line under sub, in prose: what a mono sub needs said of
+	// it.
+	note string
 }
 
 // settingsRow is a row of a group: the title and what explains it on the
@@ -703,6 +706,9 @@ func (a *appState) settingsRow(c *ui.Context, title string, o settingsRowOpts, c
 				if o.check != 0 {
 					s.Margin(0, 0, 0, 24)
 				}
+			}
+			if o.note != "" {
+				ui.Text(c, o.note).FontSize(11.5).TextColor(pal.TextMuted).Wrap()
 			}
 		})
 		if control != nil {
@@ -993,6 +999,16 @@ func (a *appState) settingsButton(c *ui.Context, label string, primary, danger, 
 // settingsTextField is a small text field; it reports Enter or the field
 // losing the keyboard after an edit.
 func (a *appState) settingsTextField(c *ui.Context, key string, value *string, placeholder string, width float32, mono bool) bool {
+	return a.settingsField(c, key, value, placeholder, width, mono, false)
+}
+
+// settingsSecretField is a text field for a secret, as a token: what it
+// holds is hidden.
+func (a *appState) settingsSecretField(c *ui.Context, key string, value *string, placeholder string, width float32) bool {
+	return a.settingsField(c, key, value, placeholder, width, true, true)
+}
+
+func (a *appState) settingsField(c *ui.Context, key string, value *string, placeholder string, width float32, mono, secret bool) bool {
 	f := ui.Row(c.Key("field-"+key)).Height(26).Width(width).Padding(0, 8).Radius(6).AlignItems(ui.Center).
 		Background(pal.Input).Border(1, pal.BorderStrong)
 	done := false
@@ -1000,6 +1016,9 @@ func (a *appState) settingsTextField(c *ui.Context, key string, value *string, p
 		in := ui.TextInputBase(c, value).Placeholder(placeholder).FontSize(12).Grow(1).MinWidth(0).Label(key)
 		if mono {
 			in.Font(monoFont)
+		}
+		if secret {
+			in.Password()
 		}
 		u := &a.settingsUI
 		if u.built != nil {

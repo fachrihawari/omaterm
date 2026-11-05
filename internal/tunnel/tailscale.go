@@ -1,11 +1,13 @@
 package tunnel
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -58,11 +60,24 @@ const offTimeout = 10 * time.Second
 // serveWatch is how often a running serve is looked up to still be there.
 var serveWatch = 30 * time.Second
 
-// tailscale is a serve tailscaled keeps running: it has no process of
-// its own to watch, so it is looked up every serveWatch, and Done waits for
-// Stop or for the serve to be gone.
+// funnelPorts are the https ports Funnel serves on: Tailscale takes no
+// other.
+var funnelPorts = []int{443, 8443, 10000}
+
+// enableLink is the page Tailscale names when the tailnet must first turn
+// HTTPS or Funnel on: tailscale serve and funnel print it, and wait for it.
+var enableLink = regexp.MustCompile(`https://login\.tailscale\.com/f/[^\s"']+`)
+
+// EnableLink is the link in a tunnel's error that turns on what the
+// tailnet lacks for it, HTTPS or Funnel: "" when there is none.
+func EnableLink(msg string) string { return enableLink.FindString(msg) }
+
+// tailscale is a serve or a funnel tailscaled keeps running: it has no
+// process of its own to watch, so it is looked up every serveWatch, and
+// Done waits for Stop or for the serve to be gone.
 type tailscale struct {
 	port   int
+	funnel bool
 	target string
 	url    string
 	done   chan struct{}
@@ -73,41 +88,112 @@ type tailscale struct {
 }
 
 // startTailscale serves s's target on this machine's tailnet name, in
-// the background, and returns the tunnel.
+// the background, and returns the tunnel: to the tailnet, or through
+// Funnel to the internet.
 func startTailscale(ctx context.Context, s Spec) (Tunnel, error) {
-	name, err := tailscaleName()
-	if err != nil {
-		return nil, err
-	}
+	funnel := s.Provider == Funnel
 	port := s.Port
 	if port == 0 {
 		port = 443
 	}
+	if funnel && !slices.Contains(funnelPorts, port) {
+		return nil, fmt.Errorf("Funnel serves on 443, 8443 or 10000 only, not %d", port)
+	}
+	name, err := tailscaleName()
+	if err != nil {
+		return nil, err
+	}
 	if err := checkServePort(port, s.Target); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, serveTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, TailscaleBin(), "serve", "--bg", "--https="+strconv.Itoa(port), s.Target)
-	hide(cmd)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("tailscale serve: %w", ctx.Err())
-		}
-		if msg := firstLine(string(out)); msg != "" {
-			return nil, fmt.Errorf("tailscale serve: %s", msg)
-		}
-		return nil, fmt.Errorf("tailscale serve: %w", err)
+	if err := runServe(ctx, verb(funnel), "--bg", "--https="+strconv.Itoa(port), s.Target); err != nil {
+		return nil, err
 	}
-	trackServe(port, true)
+	trackServe(port, funnel, true)
 	u := "https://" + name
 	if port != 443 {
 		u += ":" + strconv.Itoa(port)
 	}
-	t := &tailscale{port: port, target: s.Target, url: u, done: make(chan struct{})}
+	t := &tailscale{port: port, funnel: funnel, target: s.Target, url: u, done: make(chan struct{})}
 	go t.watch()
 	return t, nil
+}
+
+// verb is the tailscale command that serves: funnel, to the internet, or
+// serve, to the tailnet.
+func verb(funnel bool) string {
+	if funnel {
+		return "funnel"
+	}
+	return "serve"
+}
+
+// runServe runs tailscale serve or funnel with --bg, which returns once
+// tailscaled serves. Its output is read as it comes: on a tailnet without
+// HTTPS or Funnel turned on it prints a link to turn them on, and waits
+// for the user (or ends, saying nothing went wrong). Either way it is
+// ended at once, and the link said as the error, for the user to open.
+func runServe(ctx context.Context, verb string, args ...string) error {
+	ctx, cancel := context.WithTimeout(ctx, serveTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, TailscaleBin(), append([]string{verb}, args...)...)
+	hide(cmd)
+	r, w, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	cmd.Stdout, cmd.Stderr = w, w
+	err = cmd.Start()
+	w.Close()
+	if err != nil {
+		r.Close()
+		return fmt.Errorf("tailscale %s: %w", verb, err)
+	}
+	var (
+		mu   sync.Mutex
+		out  strings.Builder
+		link string
+	)
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		br := bufio.NewReader(r)
+		for {
+			line, err := br.ReadString('\n')
+			mu.Lock()
+			out.WriteString(line)
+			if l := EnableLink(line); l != "" && link == "" {
+				link = l
+				cancel() // it waits for the user: no longer
+			}
+			mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	werr := cmd.Wait()
+	select {
+	case <-read:
+	case <-time.After(logGrace):
+	}
+	r.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	switch {
+	case link != "" && strings.Contains(link, "/f/funnel"):
+		return fmt.Errorf("Turn on Funnel for this tailnet: %s", link)
+	case link != "":
+		return fmt.Errorf("Turn on HTTPS for this tailnet: %s", link)
+	case werr == nil:
+		return nil
+	case ctx.Err() != nil:
+		return fmt.Errorf("tailscale %s: %w", verb, ctx.Err())
+	}
+	if msg := firstLine(out.String()); msg != "" {
+		return fmt.Errorf("tailscale %s: %s", verb, msg)
+	}
+	return fmt.Errorf("tailscale %s: %w", verb, werr)
 }
 
 // watch ends the tunnel, with an error, when tailscaled no longer serves
@@ -131,7 +217,7 @@ func (t *tailscale) watch() {
 				t.mu.Lock()
 				t.err = fmt.Errorf("tailscale no longer serves %s on port %d", t.target, t.port)
 				t.mu.Unlock()
-				trackServe(t.port, false)
+				trackServe(t.port, t.funnel, false)
 				close(t.done)
 			})
 			return
@@ -152,23 +238,27 @@ func (t *tailscale) Err() error {
 	return t.err
 }
 
-// Stop turns the serve off, which ends what tailscaled runs for it.
+// Stop turns the serve or funnel off, which ends what tailscaled runs
+// for it.
 func (t *tailscale) Stop() error {
 	var err error
 	t.once.Do(func() {
 		defer close(t.done)
-		if err = serveOff(t.port); err == nil {
-			trackServe(t.port, false)
+		if err = serveOff(t.port, t.funnel); err == nil {
+			trackServe(t.port, t.funnel, false)
 		}
 	})
 	return err
 }
 
-// serveOff turns off the serve on an https port.
-func serveOff(port int) error {
+// serveOff turns off the serve on an https port, by the command that
+// turned it on: a funnel's with tailscale funnel, which closes it to the
+// internet as well.
+func serveOff(port int, funnel bool) error {
+	v := verb(funnel)
 	ctx, cancel := context.WithTimeout(context.Background(), offTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, TailscaleBin(), "serve", "--https="+strconv.Itoa(port), "off")
+	cmd := exec.CommandContext(ctx, TailscaleBin(), v, "--https="+strconv.Itoa(port), "off")
 	hide(cmd)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -176,10 +266,10 @@ func serveOff(port int) error {
 	}
 	if ctx.Err() == nil {
 		if msg := firstLine(string(out)); msg != "" {
-			return fmt.Errorf("tailscale serve off: %s", msg)
+			return fmt.Errorf("tailscale %s off: %s", v, msg)
 		}
 	}
-	return fmt.Errorf("tailscale serve off: %w", err)
+	return fmt.Errorf("tailscale %s off: %w", v, err)
 }
 
 // tailscaleName is this machine's name on its tailnet, without the

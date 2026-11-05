@@ -254,6 +254,73 @@ func TestWebTunnelFollowsTheSetting(t *testing.T) {
 	}
 }
 
+// A Cloudflare tunnel of the user's own domain runs with its token and
+// hostname, and is made again when either changes; a reload that changes
+// neither leaves it be. Tailscale, Funnel among it, gets neither.
+func TestWebTunnelFollowsTheCloudflareDomain(t *testing.T) {
+	d, _ := startDaemon(t, time.Minute)
+	var mu sync.Mutex
+	var specs []tunnel.Spec
+	var running []*fakeTunnel
+	undoStart := swapStartTunnel(func(ctx context.Context, s tunnel.Spec) (tunnel.Tunnel, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		specs = append(specs, s)
+		f := &fakeTunnel{url: "https://" + s.Hostname, done: make(chan struct{})}
+		running = append(running, f)
+		return f, nil
+	})
+	defer undoStart()
+	last := func() (tunnel.Spec, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return specs[len(specs)-1], len(specs)
+	}
+
+	port := freePort()
+	set := func(change func(*web.Config)) web.Status {
+		t.Helper()
+		d.webStore().SetConfig(change)
+		return reload(t, d)
+	}
+	st := set(func(c *web.Config) {
+		c.Enabled, c.Port, c.Tunnel = true, port, "cloudflare"
+		c.CloudflareToken, c.CloudflareHost = "token-1", "term.example.com"
+	})
+	spec, n := last()
+	if spec.Token != "token-1" || spec.Hostname != "term.example.com" || st.TunnelURL != "https://term.example.com" {
+		t.Fatalf("spec %+v, status %+v", spec, st)
+	}
+	set(func(c *web.Config) { c.Tunnel = "cloudflare" }) // nothing changed
+	if _, again := last(); again != n {
+		t.Fatalf("%d tunnels for the same setting", again)
+	}
+
+	set(func(c *web.Config) { c.CloudflareHost = "web.example.com" })
+	if spec, again := last(); again != n+1 || spec.Hostname != "web.example.com" || spec.Token != "token-1" {
+		t.Fatalf("a new hostname: %+v (%d tunnels)", spec, again)
+	}
+	mu.Lock()
+	first := running[0]
+	mu.Unlock()
+	waitFor(t, "the old tunnel stopped", first.isStopped)
+
+	set(func(c *web.Config) { c.CloudflareToken = "token-2" })
+	if spec, again := last(); again != n+2 || spec.Token != "token-2" {
+		t.Fatalf("a new token: %+v (%d tunnels)", spec, again)
+	}
+
+	// Funnel is Tailscale's: the Cloudflare tunnel's token stays home.
+	set(func(c *web.Config) { c.Tunnel = "funnel" })
+	if spec, again := last(); again != n+3 || spec.Provider != tunnel.Funnel || spec.Token != "" || spec.Hostname != "" {
+		t.Fatalf("funnel: %+v (%d tunnels)", spec, again)
+	}
+	set(func(c *web.Config) { c.CloudflareToken = "token-3" })
+	if _, again := last(); again != n+3 {
+		t.Fatal("a Cloudflare token changed under Funnel made the tunnel again")
+	}
+}
+
 // Tailscale already serving something else on 443 keeps web access's tunnel
 // from replacing it: web access stays on, and the status says what to do.
 func TestWebTunnelRefusesAPortTheUserServes(t *testing.T) {

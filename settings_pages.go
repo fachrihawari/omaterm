@@ -106,6 +106,11 @@ type settingsData struct {
 	busy string
 	// port and url are the Advanced fields of Web Access, as typed.
 	port, url string
+	// cfHost and cfToken are the Cloudflare tunnel's fields, as typed.
+	// The token field starts empty: a saved token stays in web.json, and
+	// webTokenSaved alone tells of it.
+	cfHost, cfToken string
+	webTokenSaved   bool
 	// customFont and customSearch are fields as typed; searchCustom
 	// tells that Custom… was picked for the search engine.
 	customFont, customSearch string
@@ -151,11 +156,14 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 	store := webStore()
 	d.devices, _ = store.Devices()
 	if cfg, err := store.Config(); err == nil {
+		d.webTokenSaved = cfg.CloudflareToken != ""
+		cfg.CloudflareToken = "" // never shown, so never held
 		// Not while the port is typed: cleared to type a new one, it
 		// came back within two seconds.
 		if d.web != cfg || d.port == "" && !a.settingsUI.focused["webPort"] {
 			d.port = strconv.Itoa(cfg.ListenPort())
 			d.url = cfg.URL
+			d.cfHost = cfg.CloudflareHost
 		}
 		d.web = cfg
 	}
@@ -829,7 +837,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 	if !a.webAvailable() {
 		a.settingsNeedsDaemon(c, "webDaemon", "Web access")
 	}
-	foot := "Tunnels carry web access beyond this computer: Tailscale to your own devices, Cloudflare as a public link. Either way, only devices you pair get in."
+	foot := "Tunnels carry web access beyond this computer: Tailscale to your own devices, Funnel and Cloudflare as a public link. Each keeps its link, but Cloudflare without your domain. Only devices you pair get in."
 	if a.webOn && a.webNetwork && d.web.URL == "" {
 		foot = "Plain HTTP on your network: use it on networks you trust, or a tunnel from elsewhere."
 	}
@@ -842,11 +850,13 @@ func (a *appState) settingsWeb(c *ui.Context) {
 			}
 		})
 		// The link, in code's font; an error, in prose's.
-		a.settingsRow(c, "Reach it from elsewhere", settingsRowOpts{id: "webTunnel", sub: a.webTunnelNote(), mono: d.webTunnelURL != ""}, func() {
+		a.settingsRow(c, "Reach it from elsewhere", settingsRowOpts{id: "webTunnel", sub: a.webTunnelNote(), mono: d.webTunnelURL != "",
+			note: a.webTunnelCaveat()}, func() {
 			v := d.web.Tunnel
 			if settingsPopup(c, "webTunnel", &v, [][2]string{
 				{"", "Off"},
 				{string(tunnel.Tailscale), "Tailscale (your devices)"},
+				{string(tunnel.Funnel), "Tailscale Funnel (public link)"},
 				{string(tunnel.Cloudflare), "Cloudflare (public link)"},
 			}) {
 				a.setWebTunnel(c, v)
@@ -857,8 +867,18 @@ func (a *appState) settingsWeb(c *ui.Context) {
 					mygo.Clipboard.WriteText(d.webTunnelURL)
 					toast(c, "Copied the tunnel's link")
 				}
+			} else if link := tunnel.EnableLink(d.webTunnelErr); link != "" {
+				// Tailscale waits for the tailnet to turn Funnel (or
+				// HTTPS) on, at this link.
+				if a.settingsButton(c, "Copy##enable", false, false, false) {
+					mygo.Clipboard.WriteText(link)
+					toast(c, "Copied the link: open it to turn it on")
+				}
 			}
 		})
+		if d.web.Tunnel == string(tunnel.Cloudflare) {
+			a.settingsCloudflare(c)
+		}
 		net := a.webOn && a.webNetwork
 		a.settingsRow(c, "On your network", settingsRowOpts{id: "webNetwork", sub: "Listens on every address, not only this computer’s."}, func() {
 			// On, it turns web access on too.
@@ -951,6 +971,68 @@ func (a *appState) settingsWeb(c *ui.Context) {
 	})
 }
 
+// settingsCloudflare is the rows of the user's own Cloudflare tunnel,
+// under the choice of Cloudflare: its domain, and its token, which the
+// page never shows. Without them Cloudflare runs a quick tunnel.
+func (a *appState) settingsCloudflare(c *ui.Context) {
+	d := &a.settingsUI.data
+	a.settingsRow(c, "Your domain", settingsRowOpts{id: "webCfHost", sub: cloudflareHowTo(d.web.ListenPort())}, func() {
+		if a.settingsTextField(c, "webCfHost", &d.cfHost, "term.example.com", 200, true) {
+			host, err := tunnel.ParseHostname(d.cfHost)
+			if err != nil {
+				toast(c, "A domain is a bare name, as term.example.com")
+				d.cfHost = d.web.CloudflareHost
+				return
+			}
+			d.cfHost = host
+			if host == d.web.CloudflareHost {
+				return
+			}
+			said := "Your domain saved"
+			switch {
+			case host == "":
+				said = "Your domain and its token removed: the link changes each time the tunnel starts"
+			case !d.webTokenSaved:
+				said = "Your domain saved: paste the tunnel’s token too"
+			}
+			a.changeWebSaying(c, func(cfg *web.Config) {
+				cfg.CloudflareHost = host
+				if host == "" {
+					cfg.CloudflareToken = "" // back to a quick tunnel
+				}
+			}, said, nil)
+			a.settingsUI.dataAt = time.Time{}
+		}
+	})
+	a.settingsRow(c, "Tunnel token", settingsRowOpts{id: "webCfToken"}, func() {
+		placeholder := "Paste the token"
+		if d.webTokenSaved {
+			placeholder = "Saved: paste to change"
+		}
+		if a.settingsSecretField(c, "webCfToken", &d.cfToken, placeholder, 200) {
+			token := strings.TrimSpace(d.cfToken)
+			d.cfToken = "" // the field doesn't keep it
+			if token == "" {
+				return
+			}
+			said := "Tunnel token saved"
+			if d.web.CloudflareHost == "" {
+				said = "Tunnel token saved: add your domain too"
+			}
+			d.webTokenSaved = true
+			a.changeWebSaying(c, func(cfg *web.Config) { cfg.CloudflareToken = token }, said, nil)
+			a.settingsUI.dataAt = time.Time{}
+		}
+	})
+}
+
+// cloudflareHowTo says where a Cloudflare tunnel of one's own domain is
+// made, to reach web access on port.
+func cloudflareHowTo(port int) string {
+	return "In Cloudflare: Zero Trust › Networks › Tunnels › Create a tunnel, with a public hostname to http://localhost:" +
+		strconv.Itoa(port) + ". Without them, the link changes each time the tunnel starts."
+}
+
 // settingsNotOnWindows is the one row of a page for a feature Windows
 // doesn't have yet, in place of its controls.
 func (a *appState) settingsNotOnWindows(c *ui.Context, id, title, sub string) {
@@ -970,6 +1052,10 @@ func (a *appState) webTunnelNote() string {
 	switch {
 	case d.webTunnelURL != "":
 		return d.webTunnelURL
+	case tunnel.EnableLink(d.webTunnelErr) != "":
+		// The link that turns Funnel on, on a line of its own.
+		say, rest, _ := strings.Cut(d.webTunnelErr, tunnel.EnableLink(d.webTunnelErr))
+		return strings.TrimSpace(say) + "\n" + tunnel.EnableLink(d.webTunnelErr) + rest
 	case d.webTunnelErr != "":
 		return d.webTunnelErr
 	case d.webTunnelWhy != "":
@@ -978,6 +1064,16 @@ func (a *appState) webTunnelNote() string {
 		return "Starting…"
 	}
 	return ""
+}
+
+// webTunnelCaveat is said under a quick tunnel's link: it is another
+// each time the tunnel starts, and the phone must pair again.
+func (a *appState) webTunnelCaveat() string {
+	d := &a.settingsUI.data
+	if d.web.Tunnel != string(tunnel.Cloudflare) || d.webTunnelURL == "" || d.webTokenSaved && d.web.CloudflareHost != "" {
+		return ""
+	}
+	return "The link changes each time the tunnel starts again."
 }
 
 // revokeSheet asks before signing a device, or every one, out.

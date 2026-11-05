@@ -374,6 +374,7 @@ phone or another computer, let omaterm run a tunnel:
 
 ```sh
 omaterm web on --tunnel tailscale    # your own devices on your tailnet
+omaterm web on --tunnel funnel       # a public https link, on your tailnet name
 omaterm web on --tunnel cloudflare   # a public https link
 omaterm web on --tunnel none         # no tunnel
 ```
@@ -381,12 +382,38 @@ omaterm web on --tunnel none         # no tunnel
 omaterm starts the tunnel with web access, starts it again if it ends, stops
 it when you turn web access off, and puts its address in the link and the QR
 code. Each needs its tool installed: `tailscale` (signed in) or `cloudflared`.
-**Tailscale** reaches only your devices. **Cloudflare** makes a public link
-that anyone who has it can open, though the page still shows nothing until a
-browser is paired. `omaterm web status` shows the tunnel's address, or why it
-isn't running, and `omaterm web tunnel` explains the choices. If you run a
-tunnel yourself, put its address in **Public URL** (or `--url`), which
-overrides the tunnel omaterm runs.
+**Tailscale** reaches only your devices. **Funnel** and **Cloudflare** make a
+public link that anyone who has it can open, though the page still shows
+nothing until a browser is paired. `omaterm web status` shows the tunnel's
+address, or why it isn't running, and `omaterm web tunnel` explains the
+choices. If you run a tunnel yourself, put its address in **Public URL** (or
+`--url`), which overrides the tunnel omaterm runs.
+
+**Which keep their link.** Tailscale and Funnel are always at
+`https://<this computer>.<tailnet>.ts.net`, and Cloudflare is at your own
+domain once you give it one. Without one, Cloudflare runs a quick tunnel,
+whose link changes each time it starts: after a restart, the phone has to
+pair again. Moving to a link that stays means pairing the phone once more,
+and then never again.
+
+**Funnel** needs turning on once for your tailnet. The first time, the tunnel
+fails with a link that does it (Settings has Copy beside it): open it, turn
+Funnel on, and omaterm starts the tunnel by itself on its next try.
+
+**Cloudflare with your own domain**, for a domain on Cloudflare: in the
+Cloudflare dashboard, **Zero Trust → Networks → Tunnels → Create a tunnel**
+(cloudflared). Give it a public hostname, such as `term.example.com`, whose
+service is `http://localhost:7370` (the port web access serves on), and copy
+the tunnel's token. Then put both under **Your domain** and **Tunnel token**
+in Settings, or:
+
+```sh
+omaterm web on --tunnel cloudflare --hostname term.example.com --token -
+```
+
+and paste the token: `-` reads it from the terminal, out of your shell's
+history. omaterm keeps it in `web.json`, which only you can read, and never
+shows it. `--hostname ""` goes back to a quick tunnel.
 
 `omaterm web on --network` serves it on your local network instead. That is
 plain HTTP, so use it only on networks you trust.
