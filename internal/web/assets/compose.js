@@ -19,6 +19,9 @@
 // and sends them with the rest: it is never sent by itself. The language
 // chip beside it picks the language, kept under omaterm.voice.lang. Off,
 // neither shows.
+//
+// The 📎 sends a photo or screenshot to the computer, and pastes the path
+// it is kept at (attach.js).
 
 const STORE = "omaterm.compose";
 const LANG_STORE = "omaterm.voice.lang";
@@ -142,6 +145,16 @@ export function mountCompose(el, options = {}) {
   panel.append(head, box, foot);
   root.append(backdrop, panel);
   el.append(root);
+
+  // A photo or screenshot (attach.js): its path is pasted on its own as it
+  // is sent, its thumbnail shown over the box until Send.
+  import("./attach.js").then((mod) => {
+    if (ac.signal.aborted) return;
+    const attach = mod.mountAttach({ id: options.id, sendPaste, say, signal: ac.signal });
+    foot.prepend(attach.button);
+    box.before(attach.strip);
+    on(send, "click", attach.clear);
+  }).catch(() => {});
 
   let lastFocus = null;
   let leaving = 0;

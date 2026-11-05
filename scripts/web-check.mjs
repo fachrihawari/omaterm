@@ -23,10 +23,15 @@
 // So is the answer bar: a fake agent asks permission as Claude Code does,
 // the bar offers its options, a tap types the digit, a tap on a screen
 // that changed since is refused, and Stop sends Esc while it works.
+//
+// So are starting work from the phone: '+' opens the New Agent sheet,
+// which starts a shell session and opens it; and the compose box's 📎
+// sends a picture, whose path on the computer is pasted on its own.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
 import { createServer } from "node:net";
+import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -100,6 +105,42 @@ createServer((req, res) => {
 env.PATH = `${fakeBin}:${env.PATH}`;
 
 const hex = (s) => Buffer.from(s, "latin1").toString("hex");
+
+// png is a w×h picture as a PNG, bands of color standing in for a
+// screenshot.
+const png = (w, h) => {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
+    return n >>> 0;
+  });
+  const crc = (b) => (b.reduce((c, x) => crcTable[(c ^ x) & 0xff] ^ (c >>> 8), 0xffffffff) ^ 0xffffffff) >>> 0;
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const out = Buffer.alloc(body.length + 8);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc(body), body.length + 4);
+    return out;
+  };
+  const rows = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const at = y * (w * 3 + 1) + 1 + x * 3;
+      const band = Math.floor(y / (h / 4));
+      rows[at] = [47, 99, 233, 30][band] ?? 30;
+      rows[at + 1] = [129, 213, 198, 30][band] ?? 30;
+      rows[at + 2] = [247, 141, 109, 30][band] ?? 30;
+      if (x > w * 0.1 && x < w * (0.3 + 0.15 * band) && y % (h / 4) > 10 && y % (h / 4) < 22) rows.fill(255, at, at + 3);
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
+};
 const got = () => (existsSync(logFile) ? readFileSync(logFile, "utf8") : "");
 const show = (h) => (h ? JSON.stringify(Buffer.from(h, "hex").toString("latin1")) : "nothing");
 
@@ -175,11 +216,13 @@ try {
   };
 
   // check runs an action and waits for the program to have read exactly
-  // what follows what it had read before.
+  // what follows what it had read before; want, when a function, tells it
+  // once the action is done.
   let seen = "";
   const check = async (name, want, action) => {
     try {
       await action();
+      if (typeof want === "function") want = await want();
     } catch (err) {
       failed++;
       console.log(`FAIL ${name}: ${err.message}`);
@@ -452,6 +495,70 @@ setInterval(() => {}, 1 << 30);
     const shown = await evaluate(`!document.querySelector(".compose-mic").hidden || !document.querySelector(".compose-lang").hidden`);
     if (shown) throw new Error("the mic still shows");
     await tap(".compose-close");
+  });
+
+  // New Agent: '+' opens the sheet, which starts a shell in the project
+  // and opens it. No agent is started: a real one would run.
+  await check("new agent: the sheet starts a shell session, and opens it", "", async () => {
+    await evaluate(`location.hash = "#/"`);
+    await waitFor("the list did not show", `Boolean(document.querySelector(".proj .add"))`);
+    await tap(".proj .add");
+    await waitFor("the sheet's agents did not load", `document.querySelectorAll(".na-chip").length === 6`);
+    await sleep(400);
+    await shot("new-agent");
+    await tap(".na-chip", "Shell only");
+    await waitFor("a shell still asks for a first task", `document.querySelector("#na-task").closest(".na-field").hidden`);
+    await tap(".na-start");
+    await waitFor("no new session opened", `/^#\\/pane\\//.test(location.hash) && !location.hash.endsWith(${JSON.stringify(pane)})`);
+    const n = JSON.parse(omaterm("ls", "--json")).length;
+    if (n !== 2) throw new Error(`${n} sessions`);
+  });
+  await check("new agent: an agent in a worktree of its own, with a first task, as the sheet shows it", "", async () => {
+    await evaluate(`location.hash = "#/"`);
+    await waitFor("the list did not show", `Boolean(document.querySelector(".proj .add"))`);
+    await tap(".proj .add");
+    await waitFor("the sheet's agents did not load", `document.querySelectorAll(".na-chip").length === 6`);
+    await tap(".na-chip", "Claude Code");
+    await tap(".na-switch");
+    await waitFor("no branch to name", `!document.querySelector("#na-branch").closest(".na-sub").hidden`);
+    await evaluate(`document.querySelector("#na-branch").focus()`);
+    await cdp("Input.insertText", { text: "fix-login" });
+    await evaluate(`document.querySelector("#na-task").focus()`);
+    await cdp("Input.insertText", { text: "The login button does nothing on a phone: find out why and fix it." });
+    const hint = await evaluate(`document.querySelector(".na-sub .na-hint").textContent`);
+    if (hint !== "A new branch from main, in check/.worktrees/fix-login.") throw new Error(`the hint says ${hint}`);
+    await evaluate(`document.activeElement.blur()`);
+    await sleep(300);
+    await shot("new-agent-worktree");
+    await tap(".na-cancel");
+    await waitFor("the sheet did not close", `!document.querySelector(".na")`);
+  });
+
+  // A photo: the compose box's 📎 sends a picture; the path the computer
+  // keeps it at is pasted, on its own, without Enter; Send then presses
+  // Enter, and the thumbnail goes.
+  const picture = join(tmp, "screenshot.png");
+  writeFileSync(picture, png(1170, 760));
+  await check("photo: the path it is kept at is pasted, without Enter", async () =>
+    hex(await evaluate(`document.querySelector(".compose-shots img")?.title || ""`)), async () => {
+    await evaluate(`location.hash = ${JSON.stringify("#/pane/" + pane)}`);
+    await waitFor("the terminal did not open", `Boolean(document.querySelector(".btn-compose:not([hidden])"))`);
+    await sleep(500);
+    await tap(".btn-compose");
+    await waitFor("no 📎 in the compose box", `Boolean(document.querySelector(".compose-attach input"))`);
+    const { result } = await cdp("Runtime.evaluate", { expression: `document.querySelector(".compose-attach input")` });
+    await cdp("DOM.setFileInputFiles", { files: [picture], objectId: result.objectId });
+    await waitFor("no thumbnail: " + await evaluate(`document.querySelector(".compose-note").textContent`),
+      `Boolean(document.querySelector(".compose-shots img"))`);
+    const path = await evaluate(`document.querySelector(".compose-shots img").title`);
+    if (!/[\\/]uploads[\\/]phone-[0-9a-f]{16}\.jpg$/.test(path)) throw new Error(`kept at ${path}`);
+    await evaluate(`document.activeElement.blur()`);
+    await sleep(300);
+    await shot("photo");
+  });
+  await check("photo: Send presses Enter, and the thumbnail goes", hex("\r"), async () => {
+    await tap(".compose-send");
+    await waitFor("the thumbnail stays", `!document.querySelector(".compose-shots img")`);
   });
 } catch (err) {
   failed++;

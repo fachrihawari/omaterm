@@ -241,6 +241,27 @@ func TestHolds(t *testing.T) {
 	}
 }
 
+// A message given a longer boot hold waits that long for an agent to
+// start in its pane, as a new agent's first task does; no longer.
+func TestBootHold(t *testing.T) {
+	w := newWorld(t)
+	w.start("sh", []string{"sleep", "600"})
+	m, _ := w.box.Ask(proto.MailAskParams{To: "sh", ToName: "new", Text: "Fix it", Note: true, BootMS: (2 * time.Minute).Milliseconds()})
+	w.box.Tick(time.Now().Add(time.Minute))
+	if got := w.mail(m.ID); got.State != proto.MailQueued {
+		t.Fatalf("a minute on: %+v", got)
+	}
+	w.box.Tick(time.Now().Add(3 * time.Minute))
+	if got := w.mail(m.ID); got.State != proto.MailFailed || !strings.Contains(got.Why, "no agent runs in new") {
+		t.Fatalf("past its hold: %+v", got)
+	}
+	n, _ := w.box.Ask(proto.MailAskParams{To: "sh", Text: "Hi", BootMS: (time.Hour).Milliseconds()})
+	w.box.Tick(time.Now().Add(11 * time.Minute))
+	if got := w.mail(n.ID); got.State != proto.MailFailed {
+		t.Fatalf("an hour asked, past 10 minutes: %+v", got)
+	}
+}
+
 // Bad messages are refused.
 func TestAskRefuses(t *testing.T) {
 	w := newWorld(t)
