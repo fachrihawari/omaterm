@@ -270,6 +270,7 @@ let woke = 0;
 function wake() {
   if (!paired || document.visibilityState !== "visible") return;
   term?.check();
+  term?.retake();
   clearTimeout(woke);
   woke = setTimeout(() => {
     if (!paired) return;
@@ -281,6 +282,9 @@ function wake() {
 document.addEventListener("visibilitychange", wake);
 addEventListener("online", wake);
 addEventListener("pageshow", (e) => { if (e.persisted) wake(); });
+// Out of sight, the page gives its pane's size back to the computer.
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") term?.release(); });
+addEventListener("pagehide", () => term?.release());
 
 // forget wipes what the phone keeps of omaterm as it is signed out: the
 // compose drafts and Recent prompts. Its look stays, and the views'
@@ -1371,6 +1375,11 @@ function showTerm(id) {
     refresh,
     showView,
     check,
+    // release gives the pane its size back as the page goes out of
+    // sight, so a phone in a pocket keeps no one's terminal narrow;
+    // retake asks for it again as the page comes back.
+    release() { if (ws && ws.readyState === 1) ws.send(frame("u", new Uint8Array(0))); },
+    retake() { if (sized) fill(); },
     close() {
       closed = true;
       observer.disconnect();

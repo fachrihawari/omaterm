@@ -26,6 +26,10 @@ const (
 	// FramePaste: page → daemon, text to paste, bracketed when the pane's
 	// program takes pastes so; what the user typed, so no hold applies.
 	FramePaste byte = 'p'
+	// FrameRelease: page → daemon, the page went out of sight and gives
+	// the pane's size back; its next FrameResize, or what it types, takes
+	// it again.
+	FrameRelease byte = 'u'
 )
 
 const maxFrame = 16 << 20

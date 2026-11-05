@@ -111,6 +111,75 @@ func TestWebGivesSizeBack(t *testing.T) {
 	waitFor(t, "the window's size kept", func() bool { return size() == [2]int{91, 29} })
 }
 
+// Whoever types gets their size: the window takes its width back from a
+// phone by typing, and the phone takes it back the same way.
+func TestTypingTakesTheSize(t *testing.T) {
+	d, _ := startDaemon(t, 0)
+	params, _ := json.Marshal(StartParams{ID: "p1", Command: []string{"sh", "-c", "exec cat"}, Exec: true, Cols: 80, Rows: 24})
+	if _, err := d.Handle(context.Background(), "pane.start", params); err != nil {
+		t.Fatal(err)
+	}
+	size := func() [2]int {
+		c, r := d.reg.Get("p1").Term().Size()
+		return [2]int{c, r}
+	}
+	window := pipeAttach(t, d, "p1", false)
+	window.Write(proto.AppendFrame(nil, proto.FrameResize, proto.Uint16s(120, 40, 9, 18)))
+	waitFor(t, "the window's size", func() bool { return size() == [2]int{120, 40} })
+	page := pipeAttach(t, d, "p1", true)
+	page.Write(proto.AppendFrame(nil, proto.FrameResize, proto.Uint16s(40, 20, 9, 18)))
+	waitFor(t, "the page's size", func() bool { return size() == [2]int{40, 20} })
+
+	window.Write(proto.AppendFrame(nil, proto.FrameInput, []byte("x")))
+	waitFor(t, "the window's size, as it types", func() bool { return size() == [2]int{120, 40} })
+	page.Write(proto.AppendFrame(nil, proto.FrameKey, []byte("esc")))
+	waitFor(t, "the page's size, as it types", func() bool { return size() == [2]int{40, 20} })
+	window.Write(proto.AppendFrame(nil, proto.FramePaste, []byte("y")))
+	waitFor(t, "the window's size, as it pastes", func() bool { return size() == [2]int{120, 40} })
+
+	// A page that never sized the pane takes nothing by typing.
+	other := pipeAttach(t, d, "p1", true)
+	other.Write(proto.AppendFrame(nil, proto.FrameInput, []byte("z")))
+	time.Sleep(100 * time.Millisecond)
+	if got := size(); got != [2]int{120, 40} {
+		t.Fatalf("a page with no size took the pane to %v", got)
+	}
+}
+
+// A page out of sight gives the pane's size back at once, its socket
+// still open, and takes it again as it comes back.
+func TestHiddenPageGivesSizeBack(t *testing.T) {
+	d, _ := startDaemon(t, 0)
+	params, _ := json.Marshal(StartParams{ID: "p1", Command: []string{"sh", "-c", "exec cat"}, Exec: true, Cols: 80, Rows: 24})
+	if _, err := d.Handle(context.Background(), "pane.start", params); err != nil {
+		t.Fatal(err)
+	}
+	size := func() [2]int {
+		c, r := d.reg.Get("p1").Term().Size()
+		return [2]int{c, r}
+	}
+	window := pipeAttach(t, d, "p1", false)
+	window.Write(proto.AppendFrame(nil, proto.FrameResize, proto.Uint16s(120, 40, 9, 18)))
+	waitFor(t, "the window's size", func() bool { return size() == [2]int{120, 40} })
+	page := pipeAttach(t, d, "p1", true)
+	page.Write(proto.AppendFrame(nil, proto.FrameResize, proto.Uint16s(40, 20, 9, 18)))
+	waitFor(t, "the page's size", func() bool { return size() == [2]int{40, 20} })
+
+	page.Write(proto.AppendFrame(nil, proto.FrameRelease, nil))
+	waitFor(t, "the window's size back", func() bool { return size() == [2]int{120, 40} })
+	// Given back, the page's typing takes nothing until it sizes again.
+	page.Write(proto.AppendFrame(nil, proto.FrameInput, []byte("x")))
+	time.Sleep(100 * time.Millisecond)
+	if got := size(); got != [2]int{120, 40} {
+		t.Fatalf("a page that gave its size back took the pane to %v", got)
+	}
+	page.Write(proto.AppendFrame(nil, proto.FrameResize, proto.Uint16s(40, 20, 9, 18)))
+	waitFor(t, "the page's size again", func() bool { return size() == [2]int{40, 20} })
+	// Closed after, it has the window's size come back as before.
+	page.Close()
+	waitFor(t, "the window's size back again", func() bool { return size() == [2]int{120, 40} })
+}
+
 // While web access serves, the daemon stays with no pane and no client:
 // a browser may come for the sessions.
 func TestWebKeepsDaemon(t *testing.T) {

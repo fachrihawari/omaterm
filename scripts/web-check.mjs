@@ -216,11 +216,12 @@ try {
   const phone = (height = 844) => cdp("Emulation.setDeviceMetricsOverride", { width: 390, height, deviceScaleFactor: 2, mobile: true });
   await phone();
   await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-  // The sizes the page asks its pane for, from its resize frames, and the
-  // terminal sockets it opens.
+  // The sizes the page asks its pane for, from its resize frames, the
+  // times it gives the size back, and the terminal sockets it opens.
   await cdp("Page.enable");
   await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `
     window.sizes = [];
+    window.released = 0;
     window.attached = 0;
     const WS = WebSocket;
     window.WebSocket = class extends WS {
@@ -235,6 +236,7 @@ try {
         const v = new DataView(d.buffer, d.byteOffset);
         window.sizes.push(v.getUint16(5) + "x" + v.getUint16(7));
       }
+      if (d instanceof Uint8Array && d[0] === 0x75) window.released++;
       return send.call(this, d);
     };` });
   await cdp("Page.navigate", { url: `${base}/#code=${code}` });
@@ -417,6 +419,18 @@ try {
     await tap(".btn-close");
     await waitFor("the terminal did not come back", `!document.querySelector(".pane").dataset.view`);
     await key("z", "KeyZ", "z");
+  });
+  await check("out of sight, the page gives its pane's size back, and asks for it again as it comes back", "", async () => {
+    const seen = (state) => evaluate(`(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => ${JSON.stringify(state)} });
+      document.dispatchEvent(new Event("visibilitychange"));
+      if (${JSON.stringify(state)} === "visible") delete document.visibilityState;
+    })()`);
+    const n = await evaluate("window.sizes.length");
+    await seen("hidden");
+    await waitFor("the size was not given back", "window.released === 1");
+    await seen("visible");
+    await waitFor("the size was not asked for again", `window.sizes.length > ${n}`);
   });
   await check("the button opens the view last seen", "", async () => {
     const to = await evaluate(`document.querySelector(".btn-browse").getAttribute("href")`);
