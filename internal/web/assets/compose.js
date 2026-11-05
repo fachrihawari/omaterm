@@ -19,6 +19,12 @@
 // and sends them with the rest: it is never sent by itself. The language
 // chip beside it picks the language, kept under omaterm.voice.lang. Off,
 // neither shows.
+//
+// prompts.js adds Recent, the prompts sent before, and for an agent When
+// free, which lines a prompt up for once the agent is free; options.h,
+// signedOut and onQueued are for it.
+
+import { mountPrompts } from "./prompts.js";
 
 const STORE = "omaterm.compose";
 const LANG_STORE = "omaterm.voice.lang";
@@ -142,6 +148,7 @@ export function mountCompose(el, options = {}) {
   panel.append(head, box, foot);
   root.append(backdrop, panel);
   el.append(root);
+  const prompts = options.h ? mountPrompts({ ...options, head, panel, box, foot, insert, send, say }) : null;
 
   let lastFocus = null;
   let leaving = 0;
@@ -271,6 +278,7 @@ export function mountCompose(el, options = {}) {
     clearTimeout(leaving);
     root.classList.remove("leaving");
     note.hidden = true;
+    prompts?.opened();
     refreshVoice();
     lastFocus = document.activeElement;
     root.hidden = false;
@@ -327,6 +335,20 @@ export function mountCompose(el, options = {}) {
       if (root.hidden || box.value.trim() === "") return;
     }
     const text = box.value;
+    // For once the agent is free: omaterm types it in then, with Enter.
+    if (prompts?.later()) {
+      if (text.trim() === "") return;
+      send.disabled = true;
+      const why = await prompts.queue(text);
+      send.disabled = false;
+      if (why) {
+        say(why);
+        return;
+      }
+      clear();
+      close();
+      return;
+    }
     let sent = true;
     if (text.trim() !== "" && typeof sendPaste === "function") sent = sendPaste(text) !== false;
     if (sent && withEnter && typeof sendKey === "function") sent = sendKey("enter") !== false;
@@ -335,6 +357,7 @@ export function mountCompose(el, options = {}) {
       note.hidden = false;
       return;
     }
+    prompts?.remember(text);
     clear();
     close();
   }
@@ -374,9 +397,12 @@ export function mountCompose(el, options = {}) {
   return {
     open,
     close,
+    // update follows the pane's state, for When free.
+    update: (pane) => prompts?.update(pane),
     destroy() {
       stopRecording(false);
       save(box.value);
+      prompts?.destroy();
       ac.abort();
       root.remove();
     },

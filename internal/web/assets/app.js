@@ -855,12 +855,14 @@ function showTerm(id) {
   const modChip = h("div", { class: "schip mods", hidden: true });
 
   let composeBox = null;
+  // How many prompts wait for the agent to be free, which Compose lists.
+  const queuedBadge = h("span", { class: "badge", hidden: true });
   const composeBtn = h("button", {
     class: "ib btn-compose", hidden: true, title: "Compose prompt", "aria-label": "Compose prompt",
     onclick: () => {
       composeBox?.open();
     },
-  }, icon("compose", "s14"));
+  }, icon("compose", "s14"), queuedBadge);
 
   // The session's files and changes, read in the card in the terminal's
   // place. One button opens them, as last seen; there, the header trades
@@ -1125,7 +1127,12 @@ function showTerm(id) {
   composePromise.then((mod) => {
     if (mod?.mountCompose && composeSlot.isConnected) {
       composeSlot.replaceChildren();
-      composeBox = mod.mountCompose(composeSlot, { sendPaste, sendKey, id });
+      composeBox = mod.mountCompose(composeSlot, {
+        sendPaste, sendKey, id, h,
+        signedOut: () => showPair("This browser was signed out."),
+        onQueued: (n) => { queuedBadge.hidden = !n; queuedBadge.textContent = n ? String(n) : ""; },
+      });
+      composeBox.update?.(paneByID(id)?.pane);
       composeBtn.hidden = false;
     }
   });
@@ -1181,6 +1188,7 @@ function showTerm(id) {
     // While a socket is down, what the header said may be old news.
     const sc = link || offline ? h("div", { class: "schip offline" }, link || "Reconnecting…") : statusChip(cur.pane);
     statusChipEl.replaceChildren(sc ? sc : "");
+    composeBox?.update?.(cur.pane);
 
     // A turn that ended may have changed files the changes view shows.
     if (lastStatus === "working" && cur.pane.status !== "working") browse?.turnEnded();

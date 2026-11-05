@@ -23,7 +23,9 @@
 // So is the connection: the phone's keyboard, opening, keeps the pane's
 // size and lifts the cursor into sight; and a socket that died without a
 // word (a proxy in front of the page stops passing anything on) is dropped
-// as the page comes back, and the terminal reconnects.
+// as the page comes back, and the terminal reconnects. And Compose's
+// Recent puts a sent prompt back, and When free lines one up for a fake
+// agent that works on and on, and takes it back.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -125,10 +127,14 @@ try {
   writeFileSync(join(dir, "src", "main.go"), "package main\n\nfunc main() {\n\tprintln(\"hello from the phone\")\n}\n");
   writeFileSync(join(dir, "notes.txt"), "new\n");
   const sid = omaterm("new", "-n", "probe", "-d", dir, "--", process.execPath, probe);
-  // A shell's screen full of lines, its cursor at the foot.
+  // A fake agent, a script named claude as omaterm knows the agent by its
+  // process, which works on and on: what is lined up for it waits. And a
+  // shell's screen full of lines, its cursor at the foot.
+  writeFileSync(join(fakeBin, "claude"), "#!/bin/sh\nprintf '\\033]7501;state=working\\007working on it…\\n'\nwhile read -r l; do :; done\n", { mode: 0o755 });
+  const aid = omaterm("new", "-n", "agent", "-d", dir, "--", "/bin/sh", "-c", "set -m; claude; :");
   const lid = omaterm("new", "-n", "lines", "-d", dir, "--", "/bin/sh", "-c", "seq 1 200; exec cat");
   const sessions = JSON.parse(omaterm("ls", "--json"));
-  const [pane, linesPane] = [sid, lid].map((id) => sessions.find((s) => s.id === id).focus);
+  const [pane, agentPane, linesPane] = [sid, aid, lid].map((id) => sessions.find((s) => s.id === id).focus);
   await sleep(1000);
 
   const code = omaterm("web", "pair").match(/code=([A-Z0-9-]+)/)[1];
@@ -357,6 +363,62 @@ try {
     await sleep(800);
     const shown = await evaluate(`!document.querySelector(".compose-mic").hidden || !document.querySelector(".compose-lang").hidden`);
     if (shown) throw new Error("the mic still shows");
+    await tap(".compose-close");
+  });
+
+  const typeInBox = async (text) => {
+    await tap(".btn-compose");
+    await sleep(400);
+    await evaluate(`document.querySelector(".compose-box").focus()`);
+    await cdp("Input.insertText", { text });
+  };
+  await check("compose: Recent puts back a prompt sent before", hex("recover me\r"), async () => {
+    await typeInBox("recover me");
+    if (!(await evaluate(`document.querySelector(".compose-later").hidden`))) throw new Error("When free is offered for a program that is no agent");
+    await tap(".compose-send");
+    await sleep(300);
+    await tap(".btn-compose");
+    await sleep(400);
+    await tap(".compose-recent-btn");
+    await sleep(300);
+    const first = await evaluate(`document.querySelector(".compose-recent-item .t")?.textContent`);
+    if (first !== "recover me") throw new Error(`Recent starts with ${JSON.stringify(first)}`);
+    await shot("recent");
+    await tap(".compose-recent-item");
+    await waitBox(/^recover me$/);
+    await evaluate(`(() => { const b = document.querySelector(".compose-box"); b.value = ""; b.dispatchEvent(new Event("input")); })()`);
+    await tap(".compose-close");
+  });
+
+  const queuedText = "run the tests once you're done";
+  await check("compose: When free lines a prompt up for a working agent", "", async () => {
+    await evaluate(`location.hash = "#/pane/${agentPane}"`);
+    await waitFor("the agent's Compose didn't show", `!document.querySelector(".btn-compose")?.hidden`);
+    await sleep(500);
+    await typeInBox(queuedText);
+    if (await evaluate(`document.querySelector(".compose-later").hidden`)) throw new Error("no When free for the agent");
+    await tap(".compose-later");
+    const label = await evaluate(`document.querySelector(".compose-send").textContent`);
+    if (label !== "Send later" || !(await evaluate(`document.querySelector(".compose-insert").hidden`))) throw new Error(`Send says ${label}, Insert shows`);
+    await shot("when-free");
+    await tap(".compose-send");
+    await waitFor("the header doesn't count it", `document.querySelector(".btn-compose .badge")?.textContent === "1"`);
+    await sleep(400);
+    await shot("queued-badge");
+    await tap(".btn-compose");
+    await waitFor("Compose doesn't list it", `document.querySelector(".compose-queued-item .t")?.textContent === ${JSON.stringify(queuedText)}`);
+    if (await evaluate(`document.querySelector(".compose-later").getAttribute("aria-pressed")`) !== "false") throw new Error("When free stays on");
+    await sleep(400);
+    await shot("queued");
+    const m = JSON.parse(omaterm("inbox", "--json")).find((m) => m.text === queuedText);
+    if (!m || m.state !== "queued" || m.from || !m.note) throw new Error(`the mailbox has ${JSON.stringify(m)}`);
+  });
+  await check("compose: Cancel takes it back", "", async () => {
+    await tap(".compose-queued-item button");
+    await waitFor("it is still listed", `document.querySelector(".compose-queued").hidden`);
+    await waitFor("the header still counts it", `document.querySelector(".btn-compose .badge").hidden`);
+    const m = JSON.parse(omaterm("inbox", "--json")).find((m) => m.text === queuedText);
+    if (m?.state !== "failed" || m.why !== "it was cancelled") throw new Error(`the mailbox has ${JSON.stringify(m)}`);
     await tap(".compose-close");
   });
 

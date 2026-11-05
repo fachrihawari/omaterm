@@ -479,6 +479,12 @@ a.bv-crumb:hover { color: var(--text); }
   .term-bottom { display: none !important; }
 }
 .btn-compose[hidden] { display: none !important; }
+/* How many prompts wait for the agent to be free, which Compose lists. */
+.btn-compose { position: relative; }
+.btn-compose .badge {
+  position: absolute; top: 1px; right: 1px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-text); font-size: 10px; font-weight: 600; line-height: 15px; text-align: center;
+}
 
 a.pill.link { color: var(--accent); text-decoration: none; }
 a.pill.link:hover { text-decoration: underline; }
