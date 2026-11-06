@@ -32,7 +32,11 @@ func webStore() *web.Store { return web.OpenStore(web.StorePath(paths.ConfigDir(
 
 // webAvailable tells whether the session daemon runs the panes, which web
 // access needs: it serves them.
-func (a *appState) webAvailable() bool {
+func (a *appState) webAvailable() bool { return webDaemonRuns(a) }
+
+// webDaemonRuns is webAvailable's answer; tests replace it, to draw the
+// pages as they are with the daemon.
+var webDaemonRuns = func(a *appState) bool {
 	_, ok := a.panes.(*daemon.Remote)
 	return ok
 }
@@ -254,7 +258,7 @@ func (a *appState) webPairBody(c *ui.Context, p *webPairing) {
 // pairLocalWarning says that a pairing link only this computer can open
 // can't pair another device yet, and what makes it reachable.
 func pairLocalWarning(c *ui.Context) {
-	ui.Text(c, "Only this computer can open this link. Turn on On your network, or pick a tunnel under Reach it from elsewhere: a tunnel is HTTPS, which the phone’s microphone needs.").
+	ui.Text(c, "Only this computer can open this link. Use your network, or choose how your phone reaches it on the Web Access page: Tailscale, Funnel and Cloudflare are HTTPS, which the phone’s microphone needs.").
 		FontSize(12).TextColor(pal.Warn).Wrap().TextAlign(ui.Center)
 }
 

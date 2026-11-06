@@ -37,7 +37,7 @@ var settingsPages []settingsPageDef
 func init() { settingsPages = settingsPageList() }
 
 func settingsPageList() []settingsPageDef {
-	return []settingsPageDef{
+	pages := []settingsPageDef{
 		{ID: "general", Title: "General", Icon: iconSettings, Group: 0, Body: (*appState).settingsGeneral,
 			Restore: func(s *Settings, d Settings) {
 				s.Daemon, s.RestoreSessions, s.ResumeAgents = d.Daemon, d.RestoreSessions, d.ResumeAgents
@@ -75,6 +75,13 @@ func settingsPageList() []settingsPageDef {
 
 		{ID: "about", Title: "About", Icon: iconInfo, Group: 2, Body: (*appState).settingsAbout},
 	}
+	// The ways a phone reaches web access, each a page under it.
+	for i, p := range pages {
+		if p.ID == "pair" {
+			return append(pages[:i+1:i+1], append(webWayPages(), pages[i+1:]...)...)
+		}
+	}
+	return pages
 }
 
 // settingsData is what the pages show of the world outside the settings,
@@ -100,7 +107,12 @@ type settingsData struct {
 	// so it isn't asked of every refresh.
 	availFor string
 	availAt  time.Time
-	pair     *webPairing
+	// avail is why each tunnel provider can't run here, "" when it can,
+	// for the ways' rows and pages; asked of every availEvery while one
+	// of them shows.
+	avail      map[tunnel.Provider]string
+	availAllAt time.Time
+	pair       *webPairing
 	// busy names a change running in the background, as installing the
 	// service, so its control waits.
 	busy string
@@ -196,6 +208,16 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 				if askWhy {
 					dd.webTunnelWhy, dd.availFor, dd.availAt = why, cfg.Tunnel, time.Now()
 				}
+				a.invalidateWindows()
+			})
+		}()
+	}
+	if cur := a.settingsCurrent(); (cur == "web" || strings.HasPrefix(cur, "web-")) && c.Now().Sub(d.availAllAt) > availEvery {
+		d.availAllAt = c.Now()
+		go func() {
+			avail := tunnel.Available()
+			a.post(func() {
+				a.settingsUI.data.avail = avail
 				a.invalidateWindows()
 			})
 		}()
@@ -832,81 +854,67 @@ func (a *appState) settingsWeb(c *ui.Context) {
 		return
 	}
 	d := &a.settingsUI.data
-	// Its settings show, and are kept, but it serves nothing until the
-	// daemon runs.
-	if !a.webAvailable() {
-		a.settingsNeedsDaemon(c, "webDaemon", "Web access")
-	}
-	foot := "Tunnels carry web access beyond this computer: Tailscale to your own devices, Funnel and Cloudflare as a public link. Each keeps its link, but Cloudflare without your domain. Only devices you pair get in."
-	if a.webOn && a.webNetwork && d.web.URL == "" {
-		foot = "Plain HTTP on your network: use it on networks you trust, or a tunnel from elsewhere."
-	}
-	a.settingsGroup(c, "web", "", foot, func() {
+	daemonOn := a.webAvailable()
+
+	// 1. On: the session daemon serves it, so with the daemon off, its
+	// switch comes first, here rather than on another page.
+	a.settingsGroup(c, "web", "1. Turn it on", "", func() {
+		if !daemonOn {
+			a.settingSwitchRow(c, "daemon", false)
+		}
+		sub := "Off: nothing is served."
+		switch {
+		case !daemonOn:
+			sub = "Needs the session daemon: turn on “Keep sessions running” above, and restart omaterm."
+		case a.webOn:
+			sub = "On: your sessions are served on this computer, for the way you choose below to carry."
+		}
 		on := a.webOn
-		a.settingDefRow(c, "web", func() {
-			if a.settingsSwitch(c, "web", &on, false) {
+		a.settingsRow(c, "Web access", settingsRowOpts{id: "web", sub: sub}, func() {
+			if a.settingsSwitch(c, "web", &on, !daemonOn) {
 				a.setWeb(c, on)
 				a.settingsUI.dataAt = time.Time{}
 			}
 		})
-		// The link, in code's font; an error, in prose's.
-		a.settingsRow(c, "Reach it from elsewhere", settingsRowOpts{id: "webTunnel", sub: a.webTunnelNote(), mono: d.webTunnelURL != "",
-			note: a.webTunnelCaveat()}, func() {
-			v := d.web.Tunnel
-			if settingsPopup(c, "webTunnel", &v, [][2]string{
-				{"", "Off"},
-				{string(tunnel.Tailscale), "Tailscale (your devices)"},
-				{string(tunnel.Funnel), "Tailscale Funnel (public link)"},
-				{string(tunnel.Cloudflare), "Cloudflare (public link)"},
-			}) {
-				a.setWebTunnel(c, v)
-				a.settingsUI.dataAt = time.Time{}
-			}
-			if d.webTunnelURL != "" {
-				if a.settingsButton(c, "Copy", false, false, false) {
-					mygo.Clipboard.WriteText(d.webTunnelURL)
-					toast(c, "Copied the tunnel's link")
-				}
-			} else if link := tunnel.EnableLink(d.webTunnelErr); link != "" {
-				// Tailscale waits for the tailnet to turn Funnel (or
-				// HTTPS) on, at this link.
-				if a.settingsButton(c, "Copy##enable", false, false, false) {
-					mygo.Clipboard.WriteText(link)
-					toast(c, "Copied the link: open it to turn it on")
-				}
-			}
-		})
-		if d.web.Tunnel == string(tunnel.Cloudflare) {
-			a.settingsCloudflare(c)
+	})
+
+	// 2. Reach: each way has a page that says what it needs.
+	a.settingsGroup(c, "webWays", "2. Choose how your phone reaches it", "Each opens a page with what it needs, step by step. Whichever you choose, only devices you pair get in.", func() {
+		for _, w := range webWays {
+			a.webWayRow(c, w)
 		}
-		net := a.webOn && a.webNetwork
-		a.settingsRow(c, "On your network", settingsRowOpts{id: "webNetwork", sub: "Listens on every address, not only this computer’s."}, func() {
-			// On, it turns web access on too.
-			if a.settingsSwitch(c, "webNetwork", &net, false) {
-				a.setWebNetwork(c, net)
-				a.settingsUI.dataAt = time.Time{}
+	})
+
+	// 3. Pair: the QR code, and the link it holds.
+	foot := ""
+	if a.webOn && d.web.Tunnel == "" && !a.webNetwork && d.web.URL == "" {
+		foot = "With no way chosen above, only this computer’s own browser opens the link."
+	}
+	a.settingsGroup(c, "webPair", "3. Pair your phone", foot, func() {
+		a.settingsRow(c, "Pair a device", settingsRowOpts{id: "pair", sub: "Shows a QR code: scan it with the phone’s camera, and that browser is signed in."}, func() {
+			if a.settingsButton(c, "Pair a Device…", true, false, !daemonOn) {
+				a.settingsUI.data.pair = nil
+				a.settingsGo("pair")
 			}
 		})
-		a.settingsRow(c, "Link", settingsRowOpts{id: "webLink"}, func() {
-			if !a.webOn {
-				settingsPill(c, "Off", pillPlain)
-				return
-			}
-			link := d.webLink
+		link, mono := "Turn web access on first.", false
+		if a.webOn {
+			link, mono = d.webLink, true
 			if link == "" {
 				link = "…"
 			}
-			ui.Text(c, link).Font(monoFont).FontSize(12).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").MaxWidth(240).Tooltip(link)
-			// The tunnel's row copies the same link already.
-			if d.webLink != d.webTunnelURL && a.settingsButton(c, "Copy", false, false, d.webLink == "") {
+		}
+		a.settingsRow(c, "The phone’s link", settingsRowOpts{id: "webLink", sub: link, mono: mono}, func() {
+			if a.settingsButton(c, "Copy Link", false, false, !a.webOn || d.webLink == "") {
 				mygo.Clipboard.WriteText(d.webLink)
 				toast(c, "Copied the link")
 			}
 		})
 	})
+
 	a.settingsGroup(c, "devices", "Paired devices", "", func() {
 		if len(d.devices) == 0 {
-			a.settingsRow(c, "", settingsRowOpts{sub: "No devices yet"}, nil)
+			a.settingsRow(c, "", settingsRowOpts{sub: "No devices yet: pair one above."}, nil)
 		}
 		for _, dev := range d.devices {
 			dev := dev
@@ -924,10 +932,6 @@ func (a *appState) settingsWeb(c *ui.Context) {
 					a.revokeSheet(dev.ID, name)
 				}
 			})
-		}
-		if a.settingsRow(c, "Pair a Device…", settingsRowOpts{id: "pair", link: "pair"}, nil) {
-			a.settingsUI.data.pair = nil
-			a.settingsGo("pair")
 		}
 	})
 	if len(d.devices) > 1 {
@@ -955,7 +959,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 				}
 			}
 		})
-		a.settingsRow(c, "Public URL", settingsRowOpts{id: "webURL", sub: "A tunnel you run yourself. It overrides the tunnel omaterm runs, for the link and QR code."}, func() {
+		a.settingsRow(c, "Public URL", settingsRowOpts{id: "webURL", sub: "For a tunnel you run yourself, not one of the ways above: its URL goes in the link and QR code."}, func() {
 			if a.settingsTextField(c, "webURL", &d.url, "https://…", 200, true) {
 				url := strings.TrimSpace(d.url)
 				if url != d.web.URL {
@@ -971,12 +975,12 @@ func (a *appState) settingsWeb(c *ui.Context) {
 	})
 }
 
-// settingsCloudflare is the rows of the user's own Cloudflare tunnel,
-// under the choice of Cloudflare: its domain, and its token, which the
-// page never shows. Without them Cloudflare runs a quick tunnel.
+// settingsCloudflare is the last steps of the user's own Cloudflare
+// tunnel: its domain, and its token, which the page never shows. Without
+// them Cloudflare runs a quick tunnel.
 func (a *appState) settingsCloudflare(c *ui.Context) {
 	d := &a.settingsUI.data
-	a.settingsRow(c, "Your domain", settingsRowOpts{id: "webCfHost", sub: cloudflareHowTo(d.web.ListenPort())}, func() {
+	a.settingsRow(c, "4. Your domain", settingsRowOpts{id: "webCfHost", sub: "The public hostname of step 3."}, func() {
 		if a.settingsTextField(c, "webCfHost", &d.cfHost, "term.example.com", 200, true) {
 			host, err := tunnel.ParseHostname(d.cfHost)
 			if err != nil {
@@ -1004,7 +1008,7 @@ func (a *appState) settingsCloudflare(c *ui.Context) {
 			a.settingsUI.dataAt = time.Time{}
 		}
 	})
-	a.settingsRow(c, "Tunnel token", settingsRowOpts{id: "webCfToken"}, func() {
+	a.settingsRow(c, "5. The tunnel’s token", settingsRowOpts{id: "webCfToken", sub: "In the tunnel’s install command, the long text after --token. It stays on this computer."}, func() {
 		placeholder := "Paste the token"
 		if d.webTokenSaved {
 			placeholder = "Saved: paste to change"
@@ -1024,13 +1028,6 @@ func (a *appState) settingsCloudflare(c *ui.Context) {
 			a.settingsUI.dataAt = time.Time{}
 		}
 	})
-}
-
-// cloudflareHowTo says where a Cloudflare tunnel of one's own domain is
-// made, to reach web access on port.
-func cloudflareHowTo(port int) string {
-	return "In Cloudflare: Zero Trust › Networks › Tunnels › Create a tunnel, with a public hostname to http://localhost:" +
-		strconv.Itoa(port) + ". Without them, the link changes each time the tunnel starts."
 }
 
 // settingsNotOnWindows is the one row of a page for a feature Windows

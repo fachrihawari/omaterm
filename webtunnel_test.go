@@ -13,6 +13,7 @@ import (
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
 	"omaterm/internal/theme"
+	"omaterm/internal/tunnel"
 	"omaterm/internal/web"
 )
 
@@ -20,92 +21,179 @@ import (
 // wants, on an app whose web access is on.
 func tunnelPage(t *testing.T, state func(d *settingsData)) (*appState, *ui.Tester) {
 	t.Helper()
+	return wayPage(t, "web", state)
+}
+
+// wayPage renders a page of Web Access, the page itself or a way's, with
+// the state a test wants, on an app whose web access is on and whose
+// panes the session daemon runs.
+func wayPage(t *testing.T, page string, state func(d *settingsData)) (*appState, *ui.Tester) {
+	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) // no real daemon answers it
-	a, tr := newSettingsTester(t, "web")
+	daemonRuns(t, true)
+	a, tr := newSettingsTester(t, page)
 	a.webOn = true
+	a.settingsUI.dataAt = time.Now() // the state set here, not the store's
 	d := &a.settingsUI.data
 	d.web = web.Config{Enabled: true}
+	d.avail, d.availAllAt = map[tunnel.Provider]string{}, time.Now()
 	if state != nil {
 		state(d)
 	}
+	tr.SetSize(settingsWidth, 1600)
 	tr.Frame()
 	return a, tr
 }
 
-// The Reach It from Elsewhere row shows the popup's choice, and what
-// became of it: the live URL, why it isn't running, why it couldn't run
-// here at all, or that it is starting.
-func TestSettingsWebTunnelStates(t *testing.T) {
+// daemonRuns has the pages drawn as with the session daemon running, or
+// not, for the test.
+func daemonRuns(t *testing.T, runs bool) {
+	was := webDaemonRuns
+	webDaemonRuns = func(*appState) bool { return runs }
+	t.Cleanup(func() { webDaemonRuns = was })
+}
+
+// The page goes in three steps: turn it on, choose how the phone reaches
+// it, pair the phone. With the daemon off, its switch comes first.
+func TestSettingsWebSteps(t *testing.T) {
+	_, tr := tunnelPage(t, nil)
+	var last float32
+	for _, s := range []string{"1. Turn it on", "Web access", "2. Choose how your phone reaches it",
+		"Tailscale", "Tailscale Funnel", "Cloudflare", "Same Wi-Fi", "3. Pair your phone", "Pair a Device…", "Copy Link", "Paired devices", "Advanced"} {
+		r, ok := tr.Find(s)
+		if !ok {
+			t.Fatalf("no %q in %v", s, tr.Texts())
+		}
+		if r.Y <= last {
+			t.Fatalf("%q at %v, not under what comes before it", s, r)
+		}
+		last = r.Y
+	}
+	if tr.HasText("Keep sessions running when the window closes") {
+		t.Fatal("the daemon's switch, with the daemon on")
+	}
+
+	t.Run("no daemon", func(t *testing.T) {
+		_, tr := tunnelPage(t, nil)
+		daemonRuns(t, false)
+		tr.Frame()
+		keep, ok := tr.Find("Keep sessions running when the window closes")
+		on, _ := tr.Find("Web access")
+		if !ok || keep.Y > on.Y {
+			t.Fatalf("the daemon's switch at %v, web access at %v: %v", keep, on, tr.Texts())
+		}
+		if !tr.HasText("Needs the session daemon") {
+			t.Fatalf("web access does not say why it is off: %v", tr.Texts())
+		}
+	})
+}
+
+// Each way's row says what became of it: in use, starting, not working,
+// chosen while web access is off, or that it needs setting up here.
+func TestSettingsWebWayStates(t *testing.T) {
 	for _, c := range []struct {
-		name     string
-		state    func(d *settingsData)
-		has, not []string
+		name  string
+		off   bool
+		state func(d *settingsData)
+		pill  string
+	}{
+		{"running", false, func(d *settingsData) { d.web.Tunnel, d.webTunnelURL = "tailscale", "https://box.tailnet.ts.net" }, "In use"},
+		{"starting", false, func(d *settingsData) { d.web.Tunnel = "cloudflare" }, "Starting…"},
+		{"failed", false, func(d *settingsData) { d.web.Tunnel, d.webTunnelErr = "cloudflare", "cloudflared: exit status 1" }, "Not working"},
+		{"unavailable", false, func(d *settingsData) { d.web.Tunnel, d.webTunnelWhy = "tailscale", "tailscale is not installed" }, "Not working"},
+		{"off", true, func(d *settingsData) { d.web.Tunnel = "funnel" }, "Chosen"},
+		{"missing", false, func(d *settingsData) { d.avail[tunnel.Cloudflare] = "cloudflared is not installed" }, "Needs setup"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a, tr := tunnelPage(t, c.state)
+			a.webOn = !c.off
+			tr.Frame()
+			if !tr.HasText(c.pill) {
+				t.Fatalf("no %q in %v", c.pill, tr.Texts())
+			}
+		})
+	}
+	t.Run("network", func(t *testing.T) {
+		a, tr := tunnelPage(t, nil)
+		a.webNetwork = true
+		tr.Frame()
+		wifi, _ := tr.Find("Same Wi-Fi")
+		pill, ok := tr.Find("In use")
+		if !ok || pill.Y < wifi.Y-10 || pill.Y > wifi.Y+30 {
+			t.Fatalf("the pill at %v, Same Wi-Fi at %v", pill, wifi)
+		}
+	})
+}
+
+// A way's page says what became of it, with its link, why it fails or
+// the link that turns it on, and what it needs.
+func TestSettingsWebWayPages(t *testing.T) {
+	for _, c := range []struct {
+		name, page string
+		state      func(d *settingsData)
+		has, not   []string
 	}{
 		{
-			name:  "off",
-			state: func(d *settingsData) { d.web.Tunnel = "" },
-			has:   []string{"Reach it from elsewhere", "Off"},
+			name: "running", page: "web-tailscale",
+			state: func(d *settingsData) { d.web.Tunnel, d.webTunnelURL = "tailscale", "https://box.tailnet.ts.net" },
+			has:   []string{"In use", "https://box.tailnet.ts.net", "Copy Link", "Stop Using", "Tailscale on this computer", "Tailscale on your phone", "HTTPS on your tailnet"},
+			not:   []string{"Use Tailscale"},
 		},
 		{
-			name: "running",
-			state: func(d *settingsData) {
-				d.web.Tunnel = "tailscale"
-				d.webTunnelURL = "https://box.tailnet.ts.net"
-			},
-			has: []string{"Reach it from elsewhere", "Tailscale (your devices)", "https://box.tailnet.ts.net", "Copy"},
+			name: "not in use", page: "web-tailscale",
+			has: []string{"Not in use", "Use Tailscale", "Get the App", "Open Admin Console"},
+			not: []string{"Stop Using", "Get Tailscale"},
 		},
 		{
-			name: "failed",
-			state: func(d *settingsData) {
-				d.web.Tunnel = "cloudflare"
-				d.webTunnelErr = "cloudflared: exit status 1"
-			},
-			has: []string{"Cloudflare (public link)", "cloudflared: exit status 1"},
+			name: "missing", page: "web-tailscale",
+			state: func(d *settingsData) { d.avail[tunnel.Tailscale] = "tailscale is not installed" },
+			has:   []string{"tailscale is not installed", "Get Tailscale", "Get what it needs, below, first."},
 		},
 		{
-			name: "unavailable",
-			state: func(d *settingsData) {
-				d.web.Tunnel = "tailscale"
-				d.webTunnelWhy = "tailscale is not installed"
-			},
-			has: []string{"Tailscale (your devices)", "tailscale is not installed"},
+			name: "failed", page: "web-cloudflare",
+			state: func(d *settingsData) { d.web.Tunnel, d.webTunnelErr = "cloudflare", "cloudflared: exit status 1" },
+			has:   []string{"Not working", "cloudflared: exit status 1", "Stop Using"},
 		},
 		{
-			name:  "starting",
-			state: func(d *settingsData) { d.web.Tunnel = "cloudflare" },
-			has:   []string{"Cloudflare (public link)", "Starting…"},
-		},
-		{
-			name: "funnel",
+			name: "funnel off", page: "web-funnel",
 			state: func(d *settingsData) {
 				d.web.Tunnel = "funnel"
-				d.webTunnelURL = "https://box.tailnet.ts.net"
+				d.webTunnelErr = "Turn on Funnel for this tailnet: https://login.tailscale.com/f/funnel?node=n1"
 			},
-			has: []string{"Tailscale Funnel (public link)", "https://box.tailnet.ts.net", "Copy"},
-			not: []string{"Your domain", "changes each time"},
+			has: []string{"Turn on Funnel for this tailnet:\nhttps://login.tailscale.com/f/funnel?node=n1", "Funnel turned on", "Turn On Funnel…"},
+			not: []string{"Tailscale on your phone"},
 		},
 		{
-			name: "quick",
+			name: "quick", page: "web-cloudflare",
 			state: func(d *settingsData) {
-				d.web.Tunnel = "cloudflare"
-				d.webTunnelURL = "https://some-words-here.trycloudflare.com"
+				d.web.Tunnel, d.webTunnelURL = "cloudflare", "https://some-words-here.trycloudflare.com"
 			},
 			has: []string{"https://some-words-here.trycloudflare.com", "The link changes each time the tunnel starts again.",
-				"Your domain", "Tunnel token", "Zero Trust › Networks › Tunnels › Create a tunnel"},
+				"1. Your domain on Cloudflare", "2. Create a tunnel", "3. Give it a public hostname", "http://localhost:7370",
+				"4. Your domain", "5. The tunnel’s token", "Without them, the link is a quick one"},
 		},
 		{
-			name: "own domain",
+			name: "own domain", page: "web-cloudflare",
 			state: func(d *settingsData) {
 				d.web.Tunnel = "cloudflare"
 				d.web.CloudflareHost, d.cfHost, d.webTokenSaved = "term.example.com", "term.example.com", true
 				d.webTunnelURL = "https://term.example.com"
 			},
-			has: []string{"https://term.example.com", "Your domain", "Tunnel token"},
+			has: []string{"https://term.example.com", "The link is https://term.example.com, and stays the same."},
 			not: []string{"The link changes each time the tunnel starts again."},
+		},
+		{
+			name: "in place of another", page: "web-funnel",
+			state: func(d *settingsData) { d.web.Tunnel = "cloudflare" },
+			has:   []string{"In place of Cloudflare, which web access uses now.", "Use Tailscale Funnel"},
+		},
+		{
+			name: "wifi", page: "web-wifi",
+			has: []string{"Use Same Wi-Fi", "The phone on the same network"},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, tr := tunnelPage(t, c.state)
+			_, tr := wayPage(t, c.page, c.state)
 			for _, has := range c.has {
 				if !tr.HasText(has) {
 					t.Errorf("no %q in %v", has, tr.Texts())
@@ -120,11 +208,11 @@ func TestSettingsWebTunnelStates(t *testing.T) {
 	}
 }
 
-// Choosing a way to reach web access from elsewhere saves it, turning
-// web access on. The session daemon runs the panes as far as the choice
-// is concerned, and answers the reload that follows from its own store,
-// which here has nothing enabled — so no tunnel is run.
-func TestSettingsWebTunnelChooses(t *testing.T) {
+// Use on a way's page saves its choice, turning web access on, and Stop
+// Using takes it back. The session daemon runs the panes as far as the
+// choice is concerned, and answers the reload that follows from its own
+// store, which here has nothing enabled — so no tunnel is run.
+func TestSettingsWebWayUses(t *testing.T) {
 	runtime := t.TempDir() // the daemon's socket, and nothing else's
 	t.Setenv("XDG_RUNTIME_DIR", runtime)
 	setConfigHome(t, t.TempDir()) // its web.json, not the run's
@@ -141,42 +229,42 @@ func TestSettingsWebTunnelChooses(t *testing.T) {
 	}
 	defer r.Close()
 
-	a, tr := newSettingsTester(t, "web")
+	a, tr := newSettingsTester(t, "web-tailscale")
 	a.setPanes(r) // web access needs the daemon
-	a.webOn = true
+	defer stopTermPanes(a)
+	a.settingsUI.data.avail, a.settingsUI.data.availAllAt = map[tunnel.Provider]string{}, time.Now() // whatever this machine has
 	tr.Frame()
-	if err := tr.Click("Off"); err != nil {
-		t.Fatal(err)
+	if err := tr.Click("Use Tailscale"); err != nil {
+		t.Fatalf("%v: %v", err, tr.Texts())
 	}
 	tr.Frame()
-	if err := tr.Click("Tailscale (your devices)"); err != nil {
-		t.Fatal(err)
-	}
-	tr.Frame()
-	tr.Frame()
-	cfg, err := webStore().Config()
-	if err != nil || cfg.Tunnel != "tailscale" || !cfg.Enabled {
+	if cfg, err := webStore().Config(); err != nil || cfg.Tunnel != "tailscale" || !cfg.Enabled {
 		t.Fatalf("the choice was not saved: %+v %v", cfg, err)
 	}
-	stopTermPanes(a)
+	a.settingsUI.dataAt = time.Time{} // read the store again
+	tr.Frame()
+	if err := tr.Click("Stop Using"); err != nil {
+		t.Fatalf("%v: %v", err, tr.Texts())
+	}
+	tr.Frame()
+	if cfg, _ := webStore().Config(); cfg.Tunnel != "" {
+		t.Fatalf("still chosen: %q", cfg.Tunnel)
+	}
 }
 
-// Turning web access on while a tunnel is chosen does not turn it off
-// again when the daemon has nothing to say about it: the row keeps the
-// choice, with the daemon gone.
-func TestSettingsWebTunnelWithoutDaemon(t *testing.T) {
-	a, tr := tunnelPage(t, func(d *settingsData) {
-		d.web.Tunnel = "tailscale"
-		d.webTunnelWhy = "Tailscale is signed out"
-	})
-	if !tr.HasText("Tailscale is signed out") {
+// Without the session daemon a way's page says so, and offers no Use
+// that would only fail.
+func TestSettingsWebWayWithoutDaemon(t *testing.T) {
+	_, tr := wayPage(t, "web-funnel", nil)
+	daemonRuns(t, false)
+	tr.Frame()
+	if !tr.HasText("Web access needs the session daemon") {
 		t.Fatalf("no why in %v", tr.Texts())
 	}
-	stopTermPanes(a)
 }
 
-// TestWebTunnelShots draws the Web Access page with each tunnel state,
-// dark and light, for a look before it is merged:
+// TestWebTunnelShots draws the Web Access page and its ways' pages, dark
+// and light, for a look before it is merged:
 // SETTINGS_SHOTS=dir go test -run TestWebTunnelShots .
 func TestWebTunnelShots(t *testing.T) {
 	dir := os.Getenv("SETTINGS_SHOTS")
@@ -187,45 +275,39 @@ func TestWebTunnelShots(t *testing.T) {
 	defer setPalette(theme.BuiltinDark())
 	for _, mode := range []string{"dark", "light"} {
 		for _, c := range []struct {
-			name  string
-			state func(d *settingsData)
+			name, page string
+			state      func(d *settingsData)
 		}{
-			{"off", func(d *settingsData) { d.web.Tunnel = "" }},
-			{"running", func(d *settingsData) {
+			{"steps", "web", nil},
+			{"in-use", "web", func(d *settingsData) {
+				d.web.Tunnel = "tailscale"
+				d.webTunnelURL, d.webLink = "https://box.tailnet.ts.net", "https://box.tailnet.ts.net"
+				now := time.Now().UnixMilli()
+				d.devices = []web.Device{{ID: "d1", Name: "iPhone · Safari", Created: now, LastSeen: now}}
+			}},
+			{"tailscale", "web-tailscale", func(d *settingsData) {
 				d.web.Tunnel = "tailscale"
 				d.webTunnelURL = "https://box.tailnet.ts.net"
-				d.webLink = "https://box.tailnet.ts.net"
 			}},
-			{"failed", func(d *settingsData) {
-				d.web.Tunnel = "cloudflare"
-				d.webTunnelErr = "cloudflared: exit status 1"
-			}},
-			{"cloudflare-quick", func(d *settingsData) {
-				d.web.Tunnel = "cloudflare"
-				d.webTunnelURL = "https://some-words-here.trycloudflare.com"
-				d.webLink = d.webTunnelURL
-			}},
-			{"cloudflare-domain", func(d *settingsData) {
-				d.web.Tunnel = "cloudflare"
-				d.web.CloudflareHost, d.cfHost, d.webTokenSaved = "term.example.com", "term.example.com", true
-				d.webTunnelURL = "https://term.example.com"
-				d.webLink = d.webTunnelURL
-			}},
-			{"funnel-off", func(d *settingsData) {
+			{"funnel-off", "web-funnel", func(d *settingsData) {
 				d.web.Tunnel = "funnel"
 				d.webTunnelErr = "Turn on Funnel for this tailnet: https://login.tailscale.com/f/funnel?node=nABC123DEF"
 			}},
-			{"funnel", func(d *settingsData) {
-				d.web.Tunnel = "funnel"
-				d.webTunnelURL = "https://box.tailnet.ts.net"
-				d.webLink = d.webTunnelURL
+			{"cloudflare-missing", "web-cloudflare", func(d *settingsData) {
+				d.avail[tunnel.Cloudflare] = "cloudflared is not installed"
 			}},
+			{"cloudflare-domain", "web-cloudflare", func(d *settingsData) {
+				d.web.Tunnel = "cloudflare"
+				d.web.CloudflareHost, d.cfHost, d.webTokenSaved = "term.example.com", "term.example.com", true
+				d.webTunnelURL = "https://term.example.com"
+			}},
+			{"wifi", "web-wifi", nil},
 		} {
-			a, tr := tunnelPage(t, c.state)
+			a, tr := wayPage(t, c.page, c.state)
 			a.setThemeMode(mode)
 			tr.Frame()
 			tr.Frame()
-			f, err := os.Create(filepath.Join(dir, "settings-web-tunnel-"+mode+"-"+c.name+".png"))
+			f, err := os.Create(filepath.Join(dir, "settings-web-"+mode+"-"+c.name+".png"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -308,7 +390,7 @@ func TestSettingsWebCloudflareSaves(t *testing.T) {
 		t.Fatal(err)
 	}
 	const token = "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0="
-	a, tr := newSettingsTester(t, "web")
+	a, tr := newSettingsTester(t, "web-cloudflare")
 	defer stopTermPanes(a)
 	tr.SetSize(settingsWidth, 1600)
 	tr.Frame()

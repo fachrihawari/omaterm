@@ -367,10 +367,15 @@ need you, your project's processes with their status and address, and any
 pane as a live terminal you can type into. The page looks like the app and
 follows its theme, light or dark, on a desktop browser and on a phone.
 
-Turn it on in Settings, or with `omaterm web on`. It serves on
-`127.0.0.1:7370`, which only this computer can open. To reach it from your
-phone or another computer, let omaterm run a tunnel:
-**Settings → Web Access → Reach it from elsewhere**, or
+**Settings → Web Access** sets it up in three steps: turn it on, choose how
+your phone reaches it, and pair the phone. Each way to reach it, Tailscale,
+Tailscale Funnel, Cloudflare or the same Wi-Fi, has a page of its own that
+says what it needs, checks what it can (is `tailscale` installed and signed
+in?), and links to where each part is got or turned on.
+
+It serves on `127.0.0.1:7370`, which only this computer can open. To reach
+it from your phone or another computer, omaterm runs a tunnel. From the
+command line:
 
 ```sh
 omaterm web on --tunnel tailscale    # your own devices on your tailnet
@@ -397,15 +402,15 @@ pair again. Moving to a link that stays means pairing the phone once more,
 and then never again.
 
 **Funnel** needs turning on once for your tailnet. The first time, the tunnel
-fails with a link that does it (Settings has Copy beside it): open it, turn
-Funnel on, and omaterm starts the tunnel by itself on its next try.
+fails with a link that does it (Funnel's page has **Turn On Funnel…**): open
+it, turn Funnel on, and omaterm starts the tunnel by itself on its next try.
 
 **Cloudflare with your own domain**, for a domain on Cloudflare: in the
 Cloudflare dashboard, **Zero Trust → Networks → Tunnels → Create a tunnel**
 (cloudflared). Give it a public hostname, such as `term.example.com`, whose
 service is `http://localhost:7370` (the port web access serves on), and copy
-the tunnel's token. Then put both under **Your domain** and **Tunnel token**
-in Settings, or:
+the tunnel's token. Then put both on Cloudflare's page in Settings, which
+walks through these steps, or:
 
 ```sh
 omaterm web on --tunnel cloudflare --hostname term.example.com --token -

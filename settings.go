@@ -462,7 +462,10 @@ var settingDefs = func() []settingDef {
 
 		// Web Access (web.json, drawn by its page)
 		notWindows(row("web", "web", "Web access", "", "phone remote browser")),
-		notWindows(row("webNetwork", "web", "On your network", "", "lan 0.0.0.0")),
+		notWindows(row("webTailscale", "web", "Tailscale", "", "tailnet tunnel reach phone link")),
+		notWindows(row("webFunnel", "web", "Tailscale Funnel", "", "public tunnel reach phone link")),
+		notWindows(row("webCloudflare", "web", "Cloudflare", "", "public tunnel domain token reach phone link")),
+		notWindows(row("webNetwork", "web", "Same Wi-Fi", "", "lan network 0.0.0.0 http")),
 		notWindows(row("devices", "web", "Paired devices", "", "revoke phone")),
 		notWindows(row("pair", "web", "Pair a device", "", "qr code")),
 		notWindows(row("webPort", "web", "Port", "", "7370")),
