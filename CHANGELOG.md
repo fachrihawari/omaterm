@@ -3,6 +3,27 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.14.2
+
+Setting up web access is clearer: Settings walks you through it, one step
+at a time.
+
+### Settings › Web Access
+
+- **Three steps, in order:** turn it on, choose how your phone reaches it,
+  and pair your phone. When the session daemon is off, its switch is right
+  there in the first step, rather than a note that sends you to General.
+  **Pair a Device…** is a button of its own.
+- **A page for each way to reach it:** Tailscale, Tailscale Funnel,
+  Cloudflare and Same Wi-Fi. Each says who can open the link and whether it
+  stays the same, and has **Use** or **Stop Using**. Its list of what it
+  needs checks what it can, such as whether Tailscale is installed and
+  signed in, with a button to where each part is got or turned on.
+- **Cloudflare on your own domain, step by step:** from adding the domain,
+  to creating the tunnel and its hostname, to pasting the token.
+- On the list, each way shows what became of it: **In use**, **Starting…**,
+  **Not working**, or **Needs setup**.
+
 ## 0.14.1
 
 Fixes for web access from a phone: the computer keeps its terminal's width,
