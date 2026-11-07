@@ -1,0 +1,12 @@
+{
+  "topic": "Build in Public",
+  "posts": [
+    {
+      "text": "Update kecil dari omaterm, terminal buat ngejalanin coding agent yang lagi aku bikin.\n\nMinggu ini aku nambahin voice input. Awalnya karena ngetik prompt panjang di keyboard HP itu capek, apalagi pas lagi rebahan terus agent-nya nanya sesuatu. Sekarang di web omaterm ada tombol mic. Tap, ngomong, teksnya masuk ke kotak, aku baca dulu baru kirim.",
+      "video": "~/Videos/omaterm-voice-phone.mp4"
+    },
+    {
+      "text": "Suaranya diubah jadi teks sama whisper.cpp yang jalan di laptop sendiri, jadi nggak ada rekaman yang dikirim ke server luar. Bahasanya bisa diatur, aku pakai Indonesia sama Inggris karena ngomongnya juga campur. Di desktop juga bisa, Ctrl+Shift+Space.\n\nMasih banyak yang mau dirapihin. Kalau ada yang nyoba terus nemu yang aneh, kabarin ya. Open source, MIT:\ngithub.com/fachrihawari/omaterm"
+    }
+  ]
+}

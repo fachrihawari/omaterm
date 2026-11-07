@@ -1,0 +1,13 @@
+{
+  "topic": "AI",
+  "posts": [
+    {
+      "text": "Update omaterm minggu ini, masih soal HP.\n\nSebelumnya web omaterm cuma enak dipakai kalau aku lagi deket laptop. Begitu keluar rumah, aku nggak tahu agent-nya lagi nunggu atau udah kelar. Sekarang omaterm bisa dipasang jadi app di HP, dan notifnya masuk ke lock screen pas agent kelar, gagal, atau butuh jawaban.",
+      "video": "~/Videos/omaterm-notify-phone-2.mp4"
+    },
+    {
+      "text": "Kalau agent-nya nanya, pertanyaannya muncul lengkap sama pilihannya, tinggal tap satu. Habis itu bisa langsung lihat file apa aja yang dia ubah plus diff-nya. Dari HP juga bisa bikin agent baru dan kirim screenshot ke agent.\n\nNotifnya nggak perlu daftar akun di mana-mana, dan link-nya bisa tetap sama pakai Tailscale Funnel atau domain Cloudflare sendiri.\n\ngithub.com/fachrihawari/omaterm",
+      "video": "~/Videos/omaterm-answer-phone.mp4"
+    }
+  ]
+}
