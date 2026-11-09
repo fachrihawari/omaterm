@@ -3,6 +3,11 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.14.3
+
+OpenCode's mini mode shows while it works: a pane running `opencode mini`
+no longer stays idle for the whole turn.
+
 ## 0.14.2
 
 Setting up web access is clearer: Settings walks you through it, one step
