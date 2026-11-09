@@ -84,6 +84,25 @@ func TestProgress(t *testing.T) {
 	}
 }
 
+// OpenCode mini v2.2.6 shows "esc interrupt" while it works (no "to"),
+// which the full TUI's "esc to interrupt" rule missed: the pane showed
+// idle for the whole turn.
+func TestOpencodeMini(t *testing.T) {
+	working := "▪ oc mini v2.2.6 · ~/Projects/personal/oterm\n\n" +
+		"Thinking: exploring the repository structure.\n\n" +
+		"┃\n\n" +
+		"🯧 esc interrupt · Build · DeepSeek V4.1 Flash [max] · 64.7K (6%) · Kenari · $0.00 · ctrl+p menu\n"
+	if got := Detect("opencode", Input{Screen: working, Title: "oterm dev ✗ opencode mini"}); got.State != Working {
+		t.Errorf("working: %s (rule %q), want working", got.State, got.Rule)
+	}
+	idle := "▪ oc mini v2.2.6 · ~/Projects/personal/oterm\n\n" +
+		"┃ Ask anything, / for commands, @ for context…\n\n" +
+		"Build · Iceman Free · OpenCode · ctrl+p menu\n"
+	if got := Detect("opencode", Input{Screen: idle, Title: "oterm dev ✗ opencode mini"}); got.State != Idle {
+		t.Errorf("idle: %s (rule %q), want idle", got.State, got.Rule)
+	}
+}
+
 // Codex's hooks waiting for review, over its prompt as it starts: the
 // user's to answer, and nothing typed reaches the prompt meanwhile.
 func TestCodexHooksReview(t *testing.T) {
