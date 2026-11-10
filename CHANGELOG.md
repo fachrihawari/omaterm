@@ -3,6 +3,25 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.14.4
+
+Closing tabs is quicker, and the file tree folds away in one click.
+
+### Tabs
+
+- **Close Other Tabs, Close Tabs to the Right, Close Tabs to the Left and
+  Close All Tabs** are in every tab's menu, and in the command palette.
+  A bulk close asks once for the whole set, naming the files with unsaved
+  changes and the program it ends, rather than once per tab.
+- **A worktree stays** when its session closes in a bulk close, and a
+  process's tab goes without stopping the process.
+
+### Files
+
+- **Collapse All** in the Files panel's header closes every folder, and
+  keeps what was read, so opening one again is instant. A folder's menu
+  has it too, with **Collapse Folder**.
+
 ## 0.14.3
 
 OpenCode's mini mode shows while it works: a pane running `opencode mini`

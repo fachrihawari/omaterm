@@ -212,19 +212,29 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 	if e.Clicked() && !linkClicked {
 		a.activateTab(i)
 	}
-	// Its menu is its sidebar row's.
+	// Its menu is its sidebar row's, with the tab's own close actions.
 	tab := *t
-	if pi, ok := a.projectIndexForTab(tab.ID); ok {
-		switch tab.Kind {
-		case tabTerminal:
-			info, _ := a.sessionInfo(tab)
-			e.ContextMenu(func(m *ui.Menu) { a.sessionMenu(c, m, pi, tab, info, false, nil) })
-		case tabProcess:
-			if proc, ok := a.procOfTab(tab); ok {
-				e.ContextMenu(func(m *ui.Menu) { a.processMenu(m, pi, proc) })
+	e.ContextMenu(func(m *ui.Menu) {
+		i := a.tabIndexOf(tab)
+		if i < 0 {
+			return
+		}
+		single := true
+		if pi, ok := a.projectIndexForTab(tab.ID); ok {
+			switch tab.Kind {
+			case tabTerminal:
+				info, _ := a.sessionInfo(tab)
+				a.sessionMenu(c, m, pi, tab, info, false, nil)
+				single = false
+			case tabProcess:
+				if proc, ok := a.procOfTab(tab); ok {
+					a.processMenu(m, pi, proc)
+					single = false
+				}
 			}
 		}
-	}
+		a.tabCloseMenu(m, i, single)
+	})
 	return e
 }
 
@@ -343,6 +353,178 @@ func (a *appState) closeActiveTab(c *ui.Context) {
 		return
 	}
 	a.closeTabAsking(a.activeTab)
+}
+
+// closeOtherTabsAsking closes every tab but keep, which becomes the shown
+// one.
+func (a *appState) closeOtherTabsAsking(keep int) {
+	if keep < 0 || keep >= len(a.tabs) {
+		return
+	}
+	a.activateTab(keep)
+	var idx []int
+	for i := range a.tabs {
+		if i != keep {
+			idx = append(idx, i)
+		}
+	}
+	a.closeTabsAsking(idx, "Close Other Tabs")
+}
+
+// closeTabsRightAsking closes the tabs after i.
+func (a *appState) closeTabsRightAsking(i int) {
+	if i < 0 || i >= len(a.tabs) {
+		return
+	}
+	var idx []int
+	for j := i + 1; j < len(a.tabs); j++ {
+		idx = append(idx, j)
+	}
+	a.closeTabsAsking(idx, "Close Tabs to the Right")
+}
+
+// closeTabsLeftAsking closes the tabs before i.
+func (a *appState) closeTabsLeftAsking(i int) {
+	if i < 0 || i >= len(a.tabs) {
+		return
+	}
+	var idx []int
+	for j := 0; j < i; j++ {
+		idx = append(idx, j)
+	}
+	a.closeTabsAsking(idx, "Close Tabs to the Left")
+}
+
+// closeAllTabsAsking closes every tab.
+func (a *appState) closeAllTabsAsking() {
+	idx := make([]int, len(a.tabs))
+	for i := range a.tabs {
+		idx[i] = i
+	}
+	a.closeTabsAsking(idx, "Close All Tabs")
+}
+
+// closeTabsAsking closes the tabs at indices, asking once for the whole
+// set rather than once per tab: what it loses, and what it ends. A set of
+// one is a tab's own close, with its own questions.
+func (a *appState) closeTabsAsking(indices []int, title string) {
+	idx := a.validTabIndices(indices)
+	if len(idx) == 0 {
+		return
+	}
+	if len(idx) == 1 {
+		a.closeTabAsking(idx[0])
+		return
+	}
+	// What the set loses, gathered once.
+	var unsaved, panes []string
+	worktrees, processes := 0, 0
+	for _, i := range idx {
+		t := a.tabs[i]
+		switch t.Kind {
+		case tabEditor:
+			if a.editorModified(t.Path) && !slices.Contains(unsaved, t.Path) {
+				unsaved = append(unsaved, t.Path)
+			}
+		case tabProcess:
+			// Its tab goes; the process does not: Stop is what ends it.
+			if proc, ok := a.procOfTab(t); ok && procActive(proc) {
+				processes++
+			}
+		case tabTerminal:
+			if t.Split != nil {
+				panes = append(panes, t.Split.termIDs()...)
+			}
+			// A worktree stays, as closing its session from elsewhere
+			// keeps it: bulk close never discards work.
+			if t.Worktree != nil && !t.Worktree.Gone() {
+				worktrees++
+			}
+		}
+	}
+	closeAll := func() {
+		for k := len(idx) - 1; k >= 0; k-- {
+			a.closeTab(idx[k])
+		}
+		if len(a.tabs) == 0 {
+			a.activePaneTermID = ""
+		}
+		if processes > 0 {
+			a.toast(nil, plural(processes, "process")+" keep running. Stop them from their tabs or the sidebar.")
+		}
+	}
+	var said, loses []string
+	switch len(unsaved) {
+	case 0:
+	case 1:
+		said, loses = append(said, unsaved[0]+" has unsaved changes."), append(loses, "loses them")
+	default:
+		said, loses = append(said, plural(len(unsaved), "file")+" have unsaved changes."), append(loses, "loses them")
+	}
+	if a.settings.ConfirmClose {
+		if what := a.runningProgram(panes); what != "" {
+			said, loses = append(said, what+" is still running."), append(loses, "ends it")
+		}
+	}
+	if len(said) == 0 {
+		closeAll()
+		return
+	}
+	text := strings.Join(said, " ") + " Closing " + strings.Join(loses, " and") + "."
+	if worktrees > 0 {
+		text += " Their worktrees stay."
+	}
+	a.closeAsk = &closeAsk{open: true, title: title, text: text, confirm: "Close All", run: closeAll}
+}
+
+// validTabIndices keeps the indices that name a tab, once each, in order.
+func (a *appState) validTabIndices(indices []int) []int {
+	out := make([]int, 0, len(indices))
+	for _, i := range indices {
+		if i >= 0 && i < len(a.tabs) && !slices.Contains(out, i) {
+			out = append(out, i)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// tabIndexOf finds a tab again by what it shows, as a menu built a frame
+// ago names it: -1 when it is gone.
+func (a *appState) tabIndexOf(t topTab) int {
+	for i := range a.tabs {
+		if a.tabs[i].Kind != t.Kind || a.tabs[i].ID != t.ID || a.tabs[i].Path != t.Path || a.tabs[i].Process != t.Process {
+			continue
+		}
+		// Two diffs may share a key ("stash"): the source tells them apart.
+		if t.Kind == tabDiff && a.tabs[i].Diff != t.Diff {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+// tabCloseMenu adds a tab's close actions to its menu: the others, those
+// beside it, and all of them. single adds Close Tab, for a tab whose own
+// menu has no close of its own.
+func (a *appState) tabCloseMenu(m *ui.Menu, i int, single bool) {
+	m.Separator()
+	if single && m.Item("Close Tab").Chosen() {
+		a.closeTabAsking(i)
+	}
+	if len(a.tabs) > 1 && m.Item("Close Other Tabs").Chosen() {
+		a.closeOtherTabsAsking(i)
+	}
+	if i < len(a.tabs)-1 && m.Item("Close Tabs to the Right").Chosen() {
+		a.closeTabsRightAsking(i)
+	}
+	if i > 0 && m.Item("Close Tabs to the Left").Chosen() {
+		a.closeTabsLeftAsking(i)
+	}
+	if len(a.tabs) > 1 && m.Item("Close All Tabs").Chosen() {
+		a.closeAllTabsAsking()
+	}
 }
 
 // editorModified tells whether the shown project's editor of path has

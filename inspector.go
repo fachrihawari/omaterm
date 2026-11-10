@@ -401,6 +401,9 @@ func (a *appState) filesPanel(c *ui.Context) ui.Element {
 				if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Label("Refresh Files").Clicked() {
 					a.rebuildFileTree()
 				}
+				if a.cmdButton(c, iconFoldVertical, iconBtn, false).Tooltip("Collapse All").Label("Collapse All Folders").Clicked() {
+					a.collapseAllFiles()
+				}
 				if a.cmdButton(c, iconFilePlus, iconBtn, false).Tooltip("New File").Label("New File").Clicked() {
 					a.startNewEntry(a.workspace, false)
 				}
@@ -493,6 +496,13 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 		}
 		if m.Item("Reveal in File Manager").Chosen() {
 			mygo.Shell.ShowItemInFolder(n.Path)
+		}
+		m.Separator()
+		if n.Dir && n.Open && m.Item("Collapse Folder").Chosen() {
+			n.Open = false
+		}
+		if m.Item("Collapse All").Chosen() {
+			a.collapseAllFiles()
 		}
 	})
 	if n.Dir && n.Open {

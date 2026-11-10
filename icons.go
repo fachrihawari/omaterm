@@ -165,6 +165,9 @@ var iconChevronsUpDownSVG []byte
 //go:embed icons/file-cog.svg
 var iconFileCogSVG []byte
 
+//go:embed icons/fold-vertical.svg
+var iconFoldVerticalSVG []byte
+
 var (
 	iconAlert          = ui.MustParseSVG(iconAlertSVG)
 	iconChevronDown    = ui.MustParseSVG(iconChevronDownSVG)
@@ -219,4 +222,5 @@ var (
 	iconMic            = ui.MustParseSVG(iconMicSVG)
 	iconChevronsUpDown = ui.MustParseSVG(iconChevronsUpDownSVG)
 	iconFileCog        = ui.MustParseSVG(iconFileCogSVG)
+	iconFoldVertical   = ui.MustParseSVG(iconFoldVerticalSVG)
 )
