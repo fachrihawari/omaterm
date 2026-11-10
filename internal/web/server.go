@@ -69,13 +69,18 @@ type Server struct {
 	// does not do for a connection it has handed over.
 	conns map[*websocket.Conn]string
 	done  chan struct{}
+	// sweepEvery is how often the open WebSockets' devices are checked,
+	// read once as the server starts: a test sets the package's before
+	// Listen, and the sweep goroutine never reads it again.
+	sweepEvery time.Duration
 	// push sends the phones' notifications (push.go).
 	push     *pusher
 	pushOnce sync.Once
 }
 
 // sweepEvery is how often the open WebSockets' devices are checked, to
-// end those signed out elsewhere, as by omaterm web revoke.
+// end those signed out elsewhere, as by omaterm web revoke. A test sets
+// it before the server starts; Listen keeps it for that server.
 var sweepEvery = 5 * time.Second
 
 // closeSignedOut is the close code that tells a page its device was
@@ -96,7 +101,7 @@ func Listen(addr string, d Daemon, store *Store) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{d: d, store: store, ln: ln, conns: map[*websocket.Conn]string{}, done: make(chan struct{})}
+	s := &Server{d: d, store: store, ln: ln, conns: map[*websocket.Conn]string{}, done: make(chan struct{}), sweepEvery: sweepEvery}
 	if _, err := store.vapidKey(true); err != nil { // the key pushes are signed with (push.go)
 		log.Printf("web: push key: %v", err)
 	}
@@ -169,7 +174,7 @@ func (s *Server) end(match func(device string) bool, code websocket.StatusCode, 
 
 // sweep ends, now and then, the WebSockets of devices no longer paired.
 func (s *Server) sweep() {
-	t := time.NewTicker(sweepEvery)
+	t := time.NewTicker(s.sweepEvery)
 	defer t.Stop()
 	for {
 		select {
