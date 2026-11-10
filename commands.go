@@ -111,6 +111,18 @@ var commandRegistry = append([]Command{
 			}
 			a.closeActiveTab(c)
 		}},
+	{ID: "tab.closeOthers", Title: "Close Other Tabs", Category: "Tab",
+		Enabled: func(a *appState) bool { return len(a.tabs) > 1 },
+		Run:     func(a *appState, c *ui.Context) { a.closeOtherTabsAsking(a.activeTab) }},
+	{ID: "tab.closeRight", Title: "Close Tabs to the Right", Category: "Tab",
+		Enabled: func(a *appState) bool { return a.activeTab >= 0 && a.activeTab < len(a.tabs)-1 },
+		Run:     func(a *appState, c *ui.Context) { a.closeTabsRightAsking(a.activeTab) }},
+	{ID: "tab.closeLeft", Title: "Close Tabs to the Left", Category: "Tab",
+		Enabled: func(a *appState) bool { return a.activeTab > 0 },
+		Run:     func(a *appState, c *ui.Context) { a.closeTabsLeftAsking(a.activeTab) }},
+	{ID: "tab.closeAll", Title: "Close All Tabs", Category: "Tab",
+		Enabled: func(a *appState) bool { return len(a.tabs) > 0 },
+		Run:     func(a *appState, c *ui.Context) { a.closeAllTabsAsking() }},
 
 	{ID: "file.save", Title: "Save File", Category: "File",
 		Enabled: func(a *appState) bool {
@@ -122,6 +134,9 @@ var commandRegistry = append([]Command{
 				a.saveEditor(doc, c)
 			}
 		}},
+	{ID: "files.collapseAll", Title: "Collapse All Folders", Category: "File",
+		Enabled: func(a *appState) bool { return a.fileTree != nil },
+		Run:     func(a *appState, c *ui.Context) { a.collapseAllFiles() }},
 	{ID: "markdown.togglePreview", Title: "Toggle Preview", Category: "Markdown",
 		Enabled: func(a *appState) bool {
 			doc := a.activeEditor()

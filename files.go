@@ -57,6 +57,26 @@ func (a *appState) fileNodeAt(path string) *fileNode {
 	return find(a.fileTree)
 }
 
+// collapseAllFiles closes every folder in the Files tree, keeping what was
+// read so opening one again is instant.
+func (a *appState) collapseAllFiles() {
+	var walk func(n *fileNode)
+	walk = func(n *fileNode) {
+		if n.Dir {
+			n.Open = false
+		}
+		for _, ch := range n.Children {
+			walk(ch)
+		}
+	}
+	if a.fileTree == nil {
+		return
+	}
+	for _, ch := range a.fileTree.Children {
+		walk(ch)
+	}
+}
+
 // newEntryRow is the field a new file or folder is named in, at depth.
 func (a *appState) newEntryRow(c *ui.Context, depth int) {
 	e := a.newEntry
