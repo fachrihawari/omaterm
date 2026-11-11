@@ -3,6 +3,17 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.14.5
+
+The file tree keeps going as deep as you open it.
+
+### Files
+
+- **Folders below the first three levels now open.** The tree reads the
+  first three levels when it loads, then each folder you open reads one
+  more level, so a deeply nested project no longer stops at the same
+  depth. Folders you leave open stay open when the tree refreshes.
+
 ## 0.14.4
 
 Closing tabs is quicker, and the file tree folds away in one click.

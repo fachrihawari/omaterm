@@ -223,6 +223,9 @@ type appState struct {
 	diffSplit bool
 
 	fileTree *fileNode
+	// fileIgnored is what git ignores under the workspace, kept for folders
+	// the tree reads as they open.
+	fileIgnored map[string]bool
 	// newEntry is the file or folder being named in the Files tab.
 	newEntry *newEntry
 
@@ -1166,6 +1169,7 @@ func (a *appState) rebuildFileTree() {
 	}
 	root := &fileNode{Name: rootName, Dir: true, Open: true}
 	a.fileTree = root
+	a.fileIgnored = nil
 	defer func() {
 		var apply func(n *fileNode)
 		apply = func(n *fileNode) {
@@ -1173,7 +1177,7 @@ func (a *appState) rebuildFileTree() {
 				n.Open = o
 			}
 			if n.Open && !n.Loaded {
-				loadFileNode(n)
+				a.loadFileNode(n)
 			}
 			for _, c := range n.Children {
 				apply(c)
@@ -1186,7 +1190,8 @@ func (a *appState) rebuildFileTree() {
 	}
 	root.Path = a.workspace
 	root.Loaded = true
-	fileScan{root: a.workspace, ignored: service.Ignored(a.workspace)}.children(root, -1)
+	a.fileIgnored = service.Ignored(a.workspace)
+	fileScan{root: a.workspace, ignored: a.fileIgnored, maxDepth: fileTreeDepth}.children(root, -1)
 }
 
 // foldersFirst orders a folder's entries as file managers do: its
@@ -1204,14 +1209,21 @@ func foldersFirst(entries []os.DirEntry) []os.DirEntry {
 	return entries
 }
 
+// fileTreeDepth is how many folder levels below the workspace the tree
+// reads when it is built; folders at that depth wait to be opened.
+const fileTreeDepth = 3
+
 // fileScan reads the workspace for the file tree.
 type fileScan struct {
 	root    string
 	ignored map[string]bool // what git ignores, as slash paths under root
+	// maxDepth is how many folder levels below the scanned folder to read:
+	// 0 reads only its own entries, leaving its folders for opening.
+	maxDepth int
 }
 
 func (s fileScan) node(parent, name string, isDir bool, depth int, muted bool) *fileNode {
-	if depth > 3 {
+	if depth > s.maxDepth {
 		return nil
 	}
 	path := filepath.Join(parent, name)
@@ -1228,7 +1240,7 @@ func (s fileScan) node(parent, name string, isDir bool, depth int, muted bool) *
 		n.Action = "editor"
 		return n
 	}
-	if !muted {
+	if !muted && depth < s.maxDepth {
 		n.Loaded = true
 		s.children(n, depth)
 	}
@@ -1248,9 +1260,9 @@ func (s fileScan) children(n *fileNode, depth int) {
 	}
 }
 
-// loadFileNode reads a muted folder's children as it opens, one level:
-// its own folders wait for theirs.
-func loadFileNode(n *fileNode) {
+// loadFileNode reads a folder's children as it opens, one level: its own
+// folders wait for theirs.
+func (a *appState) loadFileNode(n *fileNode) {
 	n.Loaded = true
-	fileScan{}.children(n, 0)
+	fileScan{root: a.workspace, ignored: a.fileIgnored}.children(n, -1)
 }
