@@ -1,0 +1,9 @@
+{
+  "topic": "AI",
+  "posts": [
+    {
+      "text": "Ada yang nanya di thread launch: omaterm berat nggak? Tool sejenis yang dia pakai makan RAM sampai 20 GB.\n\nAku cek barusan, 6 jam nyala dengan 2 Claude Code:\n- app omaterm ~250–330 MB\n- daemon sesi ~40 MB\n- satu Claude Code ~330–430 MB\n\nJadi omaterm kira-kira seberat satu agent. Ditulis pakai Go, nggak pakai Electron.\n\nPas mantau dari HP, jendela di laptop boleh ditutup. Agent tetap jalan, omaterm tinggal ~40 MB.\n\nKalian biasanya jalanin berapa agent barengan?\n\ngithub.com/fachrihawari/omaterm",
+      "image": "~/Pictures/omaterm-ram.png"
+    }
+  ]
+}

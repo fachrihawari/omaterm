@@ -12,16 +12,18 @@
 //
 //   { "topic": "AI", "posts": [
 //       { "text": "…", "video": "~/Videos/omaterm-launch-tall.mp4" },
+//       { "text": "…", "image": "~/Pictures/omaterm-ram.png" },
 //       { "text": "…" } ] }
 //
-// check posts nothing: it measures each text as Threads does (500 at most,
-// an emoji counting its UTF-8 bytes; 5 links at most), and each video
-// against Threads' rules, with ffprobe.
+// A post has a video or an image, or neither. check posts nothing: it
+// measures each text as Threads does (500 at most, an emoji counting its
+// UTF-8 bytes; 5 links at most), each video against Threads' rules, with
+// ffprobe, and each image (JPEG or PNG, 8 MB at most).
 //
-// Threads fetches a video from a public URL, never from this machine.
-// upload puts the videos up as assets of a GitHub release (gh must be
+// Threads fetches a video or an image from a public URL, never from this
+// machine. upload puts them up as assets of a GitHub release (gh must be
 // logged in), in a repository of their own rather than omaterm's, whose
-// releases feed the app's updates. --base-url says the videos are already
+// releases feed the app's updates. --base-url says they are already
 // served there, by their file names.
 //
 // post publishes. It keeps what it published in <posts.json>.state.json, so
@@ -77,9 +79,15 @@ const home = (p) => (p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 function load(file) {
   const doc = JSON.parse(readFileSync(file, "utf8"));
   if (!Array.isArray(doc.posts) || doc.posts.length === 0) die(file + ": no posts");
-  doc.posts.forEach((p) => p.video && (p.video = resolve(home(p.video))));
+  for (const p of doc.posts) {
+    if (p.video) p.video = resolve(home(p.video));
+    if (p.image) p.image = resolve(home(p.image));
+  }
   return doc;
 }
+
+// media is a post's video or image, if it has one.
+const media = (p) => p.video || p.image;
 
 const stateFile = (file) => file + ".state.json";
 
@@ -152,6 +160,14 @@ function checkVideo(path) {
   return problems;
 }
 
+function checkImage(path) {
+  if (!existsSync(path)) return ["missing: " + path];
+  const problems = [];
+  if (!/\.(jpe?g|png)$/i.test(path)) problems.push("not a JPEG or PNG");
+  if (statSync(path).size > 8 << 20) problems.push("more than 8 MB");
+  return problems;
+}
+
 function check(file) {
   const doc = load(file);
   let bad = 0;
@@ -162,11 +178,13 @@ function check(file) {
   doc.posts.forEach((p, i) => {
     const problems = [];
     const n = length(p.text || "");
-    if (!p.text && !p.video) problems.push("no text and no video");
+    if (!p.text && !media(p)) problems.push("no text, no video and no image");
+    if (p.video && p.image) problems.push("a video and an image: a post takes one");
     if (n > 500) problems.push(`${n} characters, more than 500`);
     if (links(p.text || "").size > 5) problems.push("more than 5 links");
     if (p.video) problems.push(...checkVideo(p.video).map((m) => basename(p.video) + ": " + m));
-    console.log(`${i + 1}/ ${String(n).padStart(3)} chars${p.video ? "  + " + basename(p.video) : ""}${problems.length ? "\n    " + problems.join("\n    ") : ""}`);
+    if (p.image) problems.push(...checkImage(p.image).map((m) => basename(p.image) + ": " + m));
+    console.log(`${i + 1}/ ${String(n).padStart(3)} chars${media(p) ? "  + " + basename(media(p)) : ""}${problems.length ? "\n    " + problems.join("\n    ") : ""}`);
     bad += problems.length;
   });
   if (bad) die(`${bad} problem(s)`);
@@ -175,28 +193,30 @@ function check(file) {
 
 function upload(file, flags) {
   const repo = flags.gh;
-  if (!repo || repo === true) die("upload needs --gh <owner/repo>, a repository of its own for the videos");
+  if (!repo || repo === true) die("upload needs --gh <owner/repo>, a repository of its own for the media");
   const tag = flags.tag || "threads-media";
   const doc = load(file);
   const st = loadState(file);
-  const videos = [...new Set(doc.posts.filter((p) => p.video).map((p) => p.video))];
+  const files = [...new Set(doc.posts.map(media).filter(Boolean))];
+  if (files.length === 0) return console.log("no videos or images to upload");
   try {
     execFileSync("gh", ["release", "view", tag, "--repo", repo], { stdio: "ignore" });
   } catch {
     execFileSync("gh", ["release", "create", tag, "--repo", repo, "--prerelease", "--title", "Threads media",
-      "--notes", "Videos the Threads posts link to."], { stdio: "inherit" });
+      "--notes", "Videos and images the Threads posts link to."], { stdio: "inherit" });
   }
-  execFileSync("gh", ["release", "upload", tag, "--repo", repo, "--clobber", ...videos], { stdio: "inherit" });
-  for (const v of videos) {
-    const url = `https://github.com/${repo}/releases/download/${tag}/${basename(v)}`;
+  execFileSync("gh", ["release", "upload", tag, "--repo", repo, "--clobber", ...files], { stdio: "inherit" });
+  for (const f of files) {
+    const url = `https://github.com/${repo}/releases/download/${tag}/${basename(f)}`;
     reachable(url);
-    st.media[v] = url;
+    st.media[f] = url;
   }
   saveState(file, st);
-  console.log(`${videos.length} video(s) up; their URLs are in ${stateFile(file)}`);
+  console.log(`${files.length} file(s) up; their URLs are in ${stateFile(file)}`);
 }
 
-// reachable dies unless url, redirects followed, answers 200 with a video.
+// reachable dies unless url, redirects followed, answers 200 with a video
+// or an image.
 function reachable(url) {
   const out = execFileSync("curl", ["-sIL", url], { encoding: "utf8" });
   const blocks = out.trim().split(/\r?\n\r?\n/);
@@ -204,7 +224,7 @@ function reachable(url) {
   const status = (last.match(/^HTTP\/\S+ (\d+)/) || [])[1];
   const type = ((last.match(/^content-type:\s*(.+)$/im) || [])[1] || "").trim();
   if (status !== "200") die(`${url} answers ${status || "nothing"}`);
-  if (!/^video\/|^application\/octet-stream/.test(type)) die(`${url} is ${type || "of no type"}, not a video`);
+  if (!/^(video|image)\/|^application\/octet-stream/.test(type)) die(`${url} is ${type || "of no type"}, not a video or an image`);
 }
 
 function creds() {
@@ -261,11 +281,11 @@ async function post(file, flags) {
   const doc = load(file);
   const st = loadState(file);
   const { user, token } = creds();
-  // The videos' public URLs: uploaded, or under --base-url.
-  for (const p of doc.posts.filter((p) => p.video)) {
-    if (flags["base-url"]) st.media[p.video] = flags["base-url"].replace(/\/$/, "") + "/" + basename(p.video);
-    if (!st.media[p.video]) die(`${basename(p.video)} has no public URL: run upload, or give --base-url`);
-    reachable(st.media[p.video]);
+  // The videos' and images' public URLs: uploaded, or under --base-url.
+  for (const f of doc.posts.map(media).filter(Boolean)) {
+    if (flags["base-url"]) st.media[f] = flags["base-url"].replace(/\/$/, "") + "/" + basename(f);
+    if (!st.media[f]) die(`${basename(f)} has no public URL: run upload, or give --base-url`);
+    reachable(st.media[f]);
   }
   saveState(file, st);
   const from = Number(flags.from || 1) - 1;
@@ -278,6 +298,7 @@ async function post(file, flags) {
     const p = doc.posts[i];
     const params = { text: p.text || "" };
     if (p.video) Object.assign(params, { media_type: "VIDEO", video_url: st.media[p.video] });
+    else if (p.image) Object.assign(params, { media_type: "IMAGE", image_url: st.media[p.image] });
     else params.media_type = "TEXT";
     // The root takes the topic; each one after replies to the one before.
     if (i === 0 && doc.topic) params.topic_tag = doc.topic;
@@ -287,7 +308,7 @@ async function post(file, flags) {
       params.reply_to_id = prev;
     }
     const { id: container } = await call("POST", `/v1.0/${user}/threads`, params, token);
-    await (p.video ? ready(container, token) : sleep(3000));
+    await (media(p) ? ready(container, token) : sleep(3000));
     const { id } = await call("POST", `/v1.0/${user}/threads_publish`, { creation_id: container }, token);
     const { permalink } = await call("GET", `/v1.0/${id}`, { fields: "permalink" }, token).catch(() => ({}));
     st.posts[i] = { id, permalink };
