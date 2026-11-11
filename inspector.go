@@ -467,7 +467,7 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 		if n.Dir {
 			n.Open = !n.Open
 			if n.Open && !n.Loaded {
-				loadFileNode(n)
+				a.loadFileNode(n)
 			}
 		} else {
 			a.openEditor(a.nodePath(n))

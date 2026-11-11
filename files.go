@@ -31,7 +31,7 @@ func (a *appState) startNewEntry(dir string, folder bool) {
 	if n := a.fileNodeAt(dir); n != nil && n.Dir {
 		n.Open = true
 		if !n.Loaded {
-			loadFileNode(n)
+			a.loadFileNode(n)
 		}
 	}
 	a.newEntry = &newEntry{dir: dir, folder: folder}
@@ -155,7 +155,7 @@ func (a *appState) createEntry(c *ui.Context, e *newEntry) bool {
 		if n := a.fileNodeAt(dir); n != nil && n.Dir {
 			n.Open = true
 			if !n.Loaded {
-				loadFileNode(n)
+				a.loadFileNode(n)
 			}
 		}
 	}

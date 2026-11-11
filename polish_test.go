@@ -915,6 +915,57 @@ func TestFoldersFirst(t *testing.T) {
 
 }
 
+// The file tree reads three levels when it is built, then one more as
+// each deeper folder opens. A folder at the edge used to count as read
+// while it was still empty, so nothing below it could ever show.
+func TestFileTreeReadsDeeperAsFoldersOpen(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, "one", "two", "three", "four", "five")
+	os.MkdirAll(deep, 0o755)
+	os.WriteFile(filepath.Join(deep, "six.txt"), nil, 0o644)
+	a := newApp()
+	a.workspace = root
+	a.rebuildFileTree()
+	at := func(rel string) *fileNode {
+		return a.fileNodeAt(filepath.Join(root, filepath.FromSlash(rel)))
+	}
+
+	four := at("one/two/three/four")
+	if four == nil {
+		t.Fatal("the folder at the edge of the first read isn't listed")
+	}
+	if four.Loaded || len(four.Children) != 0 {
+		t.Errorf("four was read before it opened: loaded %v, %v", four.Loaded, four.Children)
+	}
+	four.Open = true
+	a.loadFileNode(four)
+	five := at("one/two/three/four/five")
+	if five == nil {
+		t.Fatal("opening four didn't read its folder")
+	}
+	if five.Loaded || len(five.Children) != 0 {
+		t.Errorf("five was read before it opened: loaded %v, %v", five.Loaded, five.Children)
+	}
+	five.Open = true
+	a.loadFileNode(five)
+	if at("one/two/three/four/five/six.txt") == nil {
+		t.Error("opening five didn't read its file")
+	}
+
+	// Reading the tree again keeps the deep folders open and read.
+	a.rebuildFileTree()
+	four, five = at("one/two/three/four"), at("one/two/three/four/five")
+	if four == nil || !four.Open || !four.Loaded {
+		t.Errorf("four after a refresh: %+v", four)
+	}
+	if five == nil || !five.Open || !five.Loaded {
+		t.Errorf("five after a refresh: %+v", five)
+	}
+	if at("one/two/three/four/five/six.txt") == nil {
+		t.Error("six.txt went away after a refresh")
+	}
+}
+
 // Dotfiles are listed, and what git ignores too, muted, as VS Code does;
 // .git is not, and a muted folder is read only as it opens.
 func TestFilesShowIgnoredMuted(t *testing.T) {
@@ -926,7 +977,7 @@ func TestFilesShowIgnoredMuted(t *testing.T) {
 		os.MkdirAll(filepath.Dir(p), 0o755)
 		os.WriteFile(p, []byte("x\n"), 0o644)
 	}
-	tree := func(root string) map[string]*fileNode {
+	tree := func(root string) (*appState, map[string]*fileNode) {
 		a := newApp()
 		a.workspace = root
 		a.rebuildFileTree()
@@ -934,7 +985,7 @@ func TestFilesShowIgnoredMuted(t *testing.T) {
 		for _, n := range a.fileTree.Children {
 			nodes[n.Name] = n
 		}
-		return nodes
+		return a, nodes
 	}
 	for _, repo := range []bool{true, false} {
 		root := t.TempDir()
@@ -947,7 +998,7 @@ func TestFilesShowIgnoredMuted(t *testing.T) {
 			write(root, rel)
 		}
 		os.WriteFile(filepath.Join(root, ".gitignore"), []byte("out/\n*.log\n.env\n"), 0o644)
-		nodes := tree(root)
+		a, nodes := tree(root)
 		if _, ok := nodes[".git"]; ok {
 			t.Errorf("repo %v: .git is listed", repo)
 		}
@@ -969,7 +1020,7 @@ func TestFilesShowIgnoredMuted(t *testing.T) {
 		if nm.Open || nm.Loaded || len(nm.Children) != 0 {
 			t.Errorf("repo %v: node_modules was read before it opened", repo)
 		}
-		loadFileNode(nm)
+		a.loadFileNode(nm)
 		if len(nm.Children) != 1 || !nm.Children[0].Muted || nm.Children[0].Loaded {
 			t.Errorf("repo %v: opened node_modules has %v, want p, muted and unread", repo, nm.Children)
 		}
