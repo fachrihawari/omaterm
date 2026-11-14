@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"omaterm/internal/paths"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
@@ -165,6 +166,12 @@ func (a *appState) term(id string) *terminal.Terminal {
 	if a.paneFailed[id] {
 		return nil
 	}
+	if host := a.paneWaiting[id]; host != "" {
+		if a.hosts == nil || a.hosts.remote(host) == nil {
+			return nil // it starts when the host connects
+		}
+		delete(a.paneWaiting, id)
+	}
 	sessionID := ""
 	if tab := a.tabOfPane(id); tab >= 0 {
 		sessionID = a.tabs[tab].ID
@@ -196,8 +203,9 @@ func (a *appState) startRestored(id, sessionID, fallback string) (session.Handle
 		command = resume
 	}
 	p, err := a.startPaneWith(id, sessionID, dir, command, exec, history)
-	if err != nil {
+	if err != nil && !errors.Is(err, errHostNotConnected) {
 		a.paneFailed[id] = true
+		a.paneErr[id] = err.Error()
 	}
 	return p, err
 }
@@ -211,23 +219,56 @@ func (a *appState) startPane(id, sessionID, dir string, command []string, exec b
 // startPaneWith is startPane with the scrollback a restored pane shows
 // above its shell.
 func (a *appState) startPaneWith(id, sessionID, dir string, command []string, exec bool, history []byte, extra ...string) (session.Handle, error) {
-	// The omaterm command comes first: another program of that name on
-	// the PATH must not answer for it in a pane.
-	env := []string{"PATH=" + paths.BinDir() + string(os.PathListSeparator) + os.Getenv("PATH")}
-	if a.ctl != nil {
-		env = append(env, "OMATERM_SOCKET="+a.ctl.Path())
-	}
-	// What the caller adds (omaterm new --env), after: it may set PATH.
-	env = append(env, extra...)
 	o := a.termStartOptions(id)
 	o.ID, o.Session, o.Dir = id, sessionID, dir
-	o.Command, o.Exec, o.Env, o.History = command, exec, env, history
+	o.Command, o.Exec, o.History = command, exec, history
+	env := extra
+	host := ""
 	if pi, _, _, ok := a.findSession(sessionID); ok {
 		p := &a.projects[pi]
 		o.Project, o.ProjectName, o.ProjectDir = p.ID, p.Name, p.Path
+		o.Host, host = p.Host, p.Host
 	}
-	return a.panes.Start(o)
+	if host == "" {
+		// The omaterm command comes first: another program of that name
+		// on the PATH must not answer for it in a pane. A remote daemon
+		// gives its panes the PATH and control socket of its computer.
+		env = []string{"PATH=" + paths.BinDir() + string(os.PathListSeparator) + os.Getenv("PATH")}
+		if a.ctl != nil {
+			env = append(env, "OMATERM_SOCKET="+a.ctl.Path())
+		}
+		// What the caller adds (omaterm new --env), after: it may set PATH.
+		env = append(env, extra...)
+	}
+	if host != "" {
+		if _, ok := a.hostByID(host); !ok {
+			return nil, errors.New("the project's host is not configured")
+		}
+		if a.hosts == nil || a.hosts.remote(host) == nil {
+			a.paneWaiting[id] = host
+			return nil, errHostNotConnected
+		}
+	}
+	delete(a.paneWaiting, id)
+	o.Env = env
+	p, err := a.panes.Start(o)
+	if err != nil && host != "" && strings.Contains(err.Error(), "reconnecting") {
+		// The host went while this pane was asked for: it starts when
+		// the host is back, as one waiting for a first connection.
+		a.paneWaiting[id] = host
+		return nil, errHostNotConnected
+	}
+	if err != nil {
+		a.paneErr[id] = err.Error()
+	} else {
+		delete(a.paneErr, id)
+	}
+	return p, err
 }
+
+// errHostNotConnected is a pane whose remote host isn't connected yet: it
+// starts when the host does, not failed for good.
+var errHostNotConnected = errors.New("the host is not connected")
 
 // termStartOptions are a terminal's look and behavior as the settings
 // have them, for the panes the app runs and the terminals that show the
@@ -285,6 +326,10 @@ func (a *appState) openTermLink(pane, link string) bool {
 			return false
 		}
 		a.openBrowser(link)
+		return true
+	}
+	if a.projectIsRemote() {
+		a.toast(nil, "That file is on the remote host: open it there, or use the terminal.")
 		return true
 	}
 	path, line, col := parseFileLink(link)
@@ -642,4 +687,6 @@ func (a *appState) closePaneRuntime(id string) {
 	delete(a.paneDirs, id)
 	delete(a.paneEnv, id)
 	delete(a.paneFailed, id)
+	delete(a.paneErr, id)
+	delete(a.paneWaiting, id)
 }

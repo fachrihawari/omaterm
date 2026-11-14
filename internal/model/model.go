@@ -37,9 +37,12 @@ type State struct {
 
 // Project is a folder the user works in.
 type Project struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Dir       string `json:"dir"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Dir  string `json:"dir"`
+	// Host is the remote host the project lives on; empty for this
+	// computer.
+	Host      string `json:"host,omitempty"`
 	Collapsed bool   `json:"collapsed,omitempty"`
 	// ActiveSession is the session it showed last.
 	ActiveSession string `json:"activeSession,omitempty"`

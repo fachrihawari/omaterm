@@ -55,6 +55,9 @@ func (a *appState) processCall(method string, raw json.RawMessage) (any, error) 
 	if pi < 0 {
 		return nil, proto.Errorf(proto.CodeNotFound, "no project "+p.Project)
 	}
+	if a.projects[pi].Host != "" {
+		return nil, proto.Errorf(proto.CodeUsage, "processes run on this computer, not on a remote host yet")
+	}
 	projectID := a.projects[pi].ID
 	if method == "process.list" {
 		// The app's own host rereads a changed omaterm.yml for the list.
@@ -225,6 +228,9 @@ func (p *localProcs) Close()                               { p.s.Close() }
 func (p *localProcs) SyncIfChanged() {
 	next := map[string]time.Time{}
 	for _, project := range p.a.projects {
+		if project.Host != "" {
+			continue
+		}
 		path := filepath.Join(project.Path, procs.FileName)
 		if info, err := os.Stat(path); err == nil {
 			next[path] = info.ModTime()
@@ -247,6 +253,9 @@ func (p *localProcs) SyncIfChanged() {
 func (p *localProcs) load() {
 	mtimes := map[string]time.Time{}
 	for _, project := range p.a.projects {
+		if project.Host != "" {
+			continue // its omaterm.yml is on the host, not here
+		}
 		path := filepath.Join(project.Path, procs.FileName)
 		if info, err := os.Stat(path); err == nil {
 			mtimes[path] = info.ModTime()
@@ -311,6 +320,12 @@ func (a *appState) refreshProcList() {
 		a.procList = map[string][]procs.Proc{}
 	}
 	for _, project := range a.projects {
+		if project.Host != "" {
+			// Its processes run on the host, which the app doesn't reach
+			// yet.
+			a.procList[project.ID] = nil
+			continue
+		}
 		if a.procHost == nil {
 			a.procList[project.ID] = nil
 			continue

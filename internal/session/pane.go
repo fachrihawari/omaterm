@@ -80,6 +80,8 @@ type Pane struct {
 // StartOptions are how Registry.Start runs a pane.
 type StartOptions struct {
 	ID, Session, Project string
+	// Host is the project's remote host; empty for this computer.
+	Host string
 	// Role is the pane's role: "process" for a supervised project process,
 	// empty for a session's pane.
 	Role string

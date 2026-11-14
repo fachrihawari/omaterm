@@ -10,7 +10,6 @@ import (
 
 	"github.com/egoist/mygo"
 
-	"omaterm/internal/daemon"
 	"omaterm/internal/session"
 	"omaterm/internal/theme"
 	"omaterm/internal/web"
@@ -77,8 +76,8 @@ func (a *appState) applyTheme(src theme.Source) {
 // pushWebTheme tells the session daemon the app's look, for the web page
 // to take; off the UI thread, as the daemon may be slow to answer.
 func (a *appState) pushWebTheme() {
-	r, ok := a.panes.(*daemon.Remote)
-	if !ok || themeSrc.Background.A == 0 { // no daemon, or no theme yet
+	r := a.localRemote()
+	if r == nil || themeSrc.Background.A == 0 { // no daemon, or no theme yet
 		return
 	}
 	t := web.ThemeOf(themeSrc)

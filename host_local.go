@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -102,6 +104,54 @@ func decode[T any](raw json.RawMessage) (T, error) {
 
 // Handle runs a method.
 func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	return h.HandleHost(ctx, "", method, raw)
+}
+
+// HandleHost runs a method for a host's command: "" this computer, else a
+// remote host's ID. A remote host's command may make and close sessions
+// there, and use them, but not the app's own computer: its files, git,
+// processes, browser panes and app commands.
+func (h *localHost) HandleHost(ctx context.Context, host string, method string, raw json.RawMessage) (any, error) {
+	if host != "" {
+		if !remoteHostMethod(method) {
+			return nil, proto.Errorf(proto.CodeNotFound, "the omaterm command on a remote host can't use "+method+" here yet")
+		}
+		switch method {
+		case "create", "split":
+			var p proto.CreateParams
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return nil, proto.Errorf(proto.CodeUsage, err.Error())
+			}
+			if p.Worktree != nil {
+				return nil, proto.Errorf(proto.CodeUsage, "worktrees are made on this computer, not a remote host")
+			}
+			p.Host = host
+			raw, _ = json.Marshal(p)
+		case "project.create":
+			var p proto.ProjectParams
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return nil, proto.Errorf(proto.CodeUsage, err.Error())
+			}
+			p.Host = host
+			raw, _ = json.Marshal(p)
+		}
+	}
+	return h.handle(ctx, method, raw)
+}
+
+// remoteHostMethod tells what a remote host's omaterm command may do with
+// the app: the sessions there, and their panes, not this computer's.
+func remoteHostMethod(method string) bool {
+	switch method {
+	case "version", "state", "create", "split", "close", "rename", "focus", "select",
+		"send", "key", "read", "capture", "wait", "notify", "report", "project.create",
+		"pane.close", "pane.agentSession":
+		return true
+	}
+	return false
+}
+
+func (h *localHost) handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	a := h.a
 	if mail.IsMethod(method) {
 		return h.mail(ctx, method, raw)
@@ -266,12 +316,12 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 			return nil, err
 		}
 		return h.onUI(func() (any, error) {
-			i := a.addProject(p.Dir, p.Name)
+			i := a.addProjectOn(p.Host, p.Dir, p.Name)
 			if i < 0 {
 				return nil, proto.Errorf(proto.CodeUsage, errStateUnreadable.Error())
 			}
 			pr := a.projects[i]
-			return proto.Project{ID: pr.ID, Name: pr.Name, Dir: pr.Path}, nil
+			return proto.Project{ID: pr.ID, Name: pr.Name, Dir: pr.Path, Host: pr.Host}, nil
 		})
 	case "actions":
 		var list []map[string]string
@@ -407,7 +457,7 @@ func remoteAction(id string) bool {
 func (a *appState) protoState(started time.Time) proto.State {
 	st := proto.State{Viewed: a.viewedSession(), Started: started.UnixMilli()}
 	for _, p := range a.projects {
-		st.Projects = append(st.Projects, proto.Project{ID: p.ID, Name: p.Name, Dir: p.Path})
+		st.Projects = append(st.Projects, proto.Project{ID: p.ID, Name: p.Name, Dir: p.Path, Host: p.Host})
 		focus := ""
 		if p.ID == a.wsOwner {
 			focus = a.activePaneTermID
@@ -471,11 +521,35 @@ func (a *appState) protoState(started time.Time) proto.State {
 
 // projectFor finds the project a new session goes in: the one named, else
 // the one holding dir (the deepest), else a new one for dir's repository,
-// else the one shown.
-func (a *appState) projectFor(ref, dir string) int {
+// else the one shown. host picks the projects of a remote host, "" those
+// of this computer.
+func (a *appState) projectFor(ref, dir, host string) int {
+	if host != "" {
+		if ref != "" {
+			for i, p := range a.projects {
+				if p.Host == host && (p.ID == ref || strings.EqualFold(p.Name, ref)) {
+					return i
+				}
+			}
+		}
+		if dir != "" {
+			dir = path.Clean(dir)
+			best, bestLen := -1, -1
+			for i, p := range a.projects {
+				if p.Host == host && remoteWithin(dir, p.Path) && len(p.Path) > bestLen {
+					best, bestLen = i, len(p.Path)
+				}
+			}
+			if best >= 0 {
+				return best
+			}
+			return a.addProjectOn(host, dir, ref)
+		}
+		return -1
+	}
 	if ref != "" {
 		for i, p := range a.projects {
-			if p.ID == ref || strings.EqualFold(p.Name, ref) {
+			if p.Host == "" && (p.ID == ref || strings.EqualFold(p.Name, ref)) {
 				return i
 			}
 		}
@@ -483,7 +557,7 @@ func (a *appState) projectFor(ref, dir string) int {
 	if dir != "" {
 		best, bestLen := -1, -1
 		for i, p := range a.projects {
-			if within(dir, p.Path) && len(p.Path) > bestLen {
+			if p.Host == "" && within(dir, p.Path) && len(p.Path) > bestLen {
 				best, bestLen = i, len(p.Path)
 			}
 		}
@@ -498,10 +572,22 @@ func (a *appState) projectFor(ref, dir string) int {
 			return a.addProject(root, ref)
 		}
 	}
-	if a.active >= 0 {
+	if a.active >= 0 && a.active < len(a.projects) && a.projects[a.active].Host == "" {
 		return a.active
 	}
-	return 0
+	for i, p := range a.projects {
+		if p.Host == "" {
+			return i
+		}
+	}
+	return -1
+}
+
+// remoteWithin reports whether dir is root or inside it, on a host whose
+// separator is "/".
+func remoteWithin(dir, root string) bool {
+	dir, root = path.Clean(dir), path.Clean(root)
+	return dir == root || strings.HasPrefix(dir, strings.TrimSuffix(root, "/")+"/")
 }
 
 // within reports whether dir is root, or inside it: /home/a holds
@@ -522,8 +608,26 @@ func samePath(a, b string) bool {
 // read, nothing is saved, and the sessions of a project added then were
 // ended as unknown at the next launch.
 func (a *appState) addProject(dir, name string) int {
+	return a.addProjectOn("", dir, name)
+}
+
+// addProjectOn adds a project on host: "" this computer, else a remote
+// one, whose path is the host's own.
+func (a *appState) addProjectOn(host, dir, name string) int {
+	if host != "" {
+		dir = path.Clean(dir)
+		if !path.IsAbs(dir) {
+			return -1
+		}
+	} else {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return -1
+		}
+		dir = abs
+	}
 	for i, p := range a.projects {
-		if samePath(p.Path, dir) {
+		if p.Host == host && sameHostPath(host, p.Path, dir) {
 			return i
 		}
 	}
@@ -532,11 +636,22 @@ func (a *appState) addProject(dir, name string) int {
 		return -1
 	}
 	if name == "" {
-		name = ospath.Base(runtime.GOOS, dir)
+		if host != "" {
+			name = path.Base(dir)
+		} else {
+			name = ospath.Base(runtime.GOOS, dir)
+		}
 	}
-	a.projects = append(a.projects, project{ID: newID(), Name: name, Path: dir})
+	a.projects = append(a.projects, project{ID: newID(), Host: host, Name: name, Path: dir})
 	a.saveSoon()
 	return len(a.projects) - 1
+}
+
+func sameHostPath(host, a, b string) bool {
+	if host != "" {
+		return path.Clean(a) == path.Clean(b)
+	}
+	return samePath(a, b)
 }
 
 // errStateUnreadable is why no project can be added while the sessions
@@ -549,9 +664,12 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 	if len(a.projects) == 0 && p.Dir == "" {
 		return nil, proto.Errorf(proto.CodeUsage, "no project: give a directory")
 	}
-	pi := a.projectFor(p.Project, p.Dir)
+	pi := a.projectFor(p.Project, p.Dir, p.Host)
 	if pi < 0 || pi >= len(a.projects) {
 		return nil, proto.Errorf(proto.CodeNotFound, "no project "+p.Project)
+	}
+	if p.Host != "" && p.URL != "" {
+		return nil, proto.Errorf(proto.CodeUsage, "browser panes belong to this computer: a remote session has terminal panes only")
 	}
 	proj := &a.projects[pi]
 	if proj.ID == "" {
@@ -581,8 +699,13 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 	if p.URL != "" {
 		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
 	} else if _, err := a.startPane(paneID, tab.ID, dir, p.Command, false, p.Env...); err != nil {
-		a.paneFailed[paneID] = true
-		return nil, err
+		if !errors.Is(err, errHostNotConnected) {
+			a.paneFailed[paneID] = true
+			a.paneErr[paneID] = err.Error()
+			return nil, err
+		}
+		// The host isn't connected yet: the session is made, and its pane
+		// starts as the host does.
 	}
 	if p.Focus {
 		a.focusSession(pi, tab.ID)
@@ -726,8 +849,13 @@ func (a *appState) cliSplit(p proto.CreateParams) (any, error) {
 		a.paneFailed[paneID] = true
 		return nil, err
 	} else if _, err := a.startPane(paneID, tab.ID, workDir, p.Command, false, p.Env...); err != nil {
-		a.paneFailed[paneID] = true
-		return nil, err
+		if !errors.Is(err, errHostNotConnected) {
+			a.paneFailed[paneID] = true
+			a.paneErr[paneID] = err.Error()
+			return nil, err
+		}
+		// The host isn't connected yet: the split is made, and its pane
+		// starts as the host does.
 	}
 	if p.Focus {
 		a.focusSession(pi, tab.ID)
@@ -895,7 +1023,9 @@ func (a *appState) agentSession(p proto.AgentSessionParams) (any, error) {
 	if !agent.SessionIDRe.MatchString(p.Session) {
 		return nil, proto.Errorf(proto.CodeUsage, "bad session id")
 	}
-	found, away := session.FindAgentPane(a.offPanes(), p.PID, p.Agent, p.Session, p.Dir)
+	// A remote pane's PID is the host's, not this computer's: only the
+	// local panes can be matched by process here.
+	found, away := session.FindAgentPane(a.localHost(), p.PID, p.Agent, p.Session, p.Dir)
 	if found == nil {
 		return nil, proto.Errorf(proto.CodeNotFound, "no pane runs that agent")
 	}

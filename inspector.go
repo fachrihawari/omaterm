@@ -41,6 +41,9 @@ func (a *appState) inspectorPanel(c *ui.Context, gap float32) {
 }
 
 func (a *appState) inspector(c *ui.Context) ui.Element {
+	if a.projectIsRemote() {
+		return ui.Column(c).Fill().Children(func() { a.remoteNote(c) })
+	}
 	a.followRepo(c)
 	return ui.Column(c).Fill().Children(func() {
 		ui.Row(c).Height(40).AlignItems(ui.End).Padding(0, 4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {

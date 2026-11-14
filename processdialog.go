@@ -48,6 +48,10 @@ func (a *appState) openProcessDialog(pi int, def *procs.Def) {
 		return
 	}
 	p := a.projects[pi]
+	if p.Host != "" {
+		a.toast(nil, "Processes run on this computer, not on a remote host yet.")
+		return
+	}
 	shared := service.RepoRoot(p.Path) != ""
 	if a.processShared != nil {
 		shared = *a.processShared

@@ -175,6 +175,7 @@ func TestSettingsRestoreDefaults(t *testing.T) {
 func TestSettingsCoverAll(t *testing.T) {
 	noUI := map[string]bool{
 		"Theme": true, // the tiles
+		"Hosts": true, // the Hosts page's list and form
 	}
 	shown := map[string]bool{}
 	for _, d := range settingDefs {

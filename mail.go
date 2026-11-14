@@ -14,7 +14,7 @@ import (
 // mail answers the mailbox's methods (package mail): the session daemon's
 // mailbox, which holds its panes', else the app's own.
 func (h *localHost) mail(ctx context.Context, method string, raw json.RawMessage) (any, error) {
-	switch panes := h.a.offPanes().(type) {
+	switch panes := h.a.localHost().(type) {
 	case *daemon.Remote:
 		out, err := panes.Forward(ctx, method, raw)
 		if err != nil && ctx.Err() != nil && method == "mail.await" {

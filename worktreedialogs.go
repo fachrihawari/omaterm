@@ -44,6 +44,10 @@ func (a *appState) openWorktreeDialog(pi int) {
 		return
 	}
 	p := a.projects[pi]
+	if p.Host != "" {
+		a.toast(nil, "Worktrees are made on this computer, not on a remote host yet.")
+		return
+	}
 	git := service.RepoRoot(p.Path) != ""
 	st := &worktreeNew{open: true, project: p.ID, name: p.Name, dir: p.Path, git: git, worktree: git && a.wtUse,
 		agent: a.wtAgent, env: a.wtEnv}

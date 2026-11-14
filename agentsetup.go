@@ -22,6 +22,13 @@ func (a *appState) offerAgentSetup(infos map[string]session.Info) {
 		if i.Agent == "" || i.AgentSession != nil {
 			continue
 		}
+		if a.hosts != nil {
+			if host := a.hosts.hostOfPane(i.ID); host != "" && host != "?" {
+				// The integration belongs on the host, not here. A pane
+				// no host knows yet is local: it is the app's own.
+				continue
+			}
+		}
 		installed, ok := a.hookChecked[i.Agent]
 		if !ok {
 			installed = cli.HookInstalled(i.Agent)

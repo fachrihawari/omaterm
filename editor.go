@@ -28,6 +28,10 @@ func (a *appState) openEditor(path string) {
 // openEditorAt opens path and moves the caret to line and col (1-based;
 // line 0 keeps it, col 0 is the line's start).
 func (a *appState) openEditorAt(path string, line, col int) {
+	if a.projectIsRemote() {
+		a.toast(nil, "Files on a remote host stay there for now: open them over SSH, or use the terminal.")
+		return
+	}
 	if _, ok := a.editors[path]; !ok {
 		abs := a.docPath(path)
 		// A PDF, a song or a video is streamed to a web view, never read:

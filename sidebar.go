@@ -257,8 +257,12 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	// Another project's header shows it; the shown one's has nothing to
 	// do on a click, so it doesn't look like it would. Its tip tells
 	// same-named projects apart.
+	tip := shortDir(p.Path)
+	if p.Host != "" {
+		tip = a.hostName(p.Host) + ":" + p.Path
+	}
 	h := ui.Row(c.Key("head")).Height(28).Padding(0, 8, 0, 6).Gap(6).AlignItems(ui.Center).Radius(7).Margin(6, 0, 0, 0).
-		Tooltip(shortDir(p.Path))
+		Tooltip(tip)
 	hovered := h.Hovered()
 	if i != a.active {
 		h.Cursor(ui.CursorPointer)
@@ -277,6 +281,44 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			ink = pal.Text
 		}
 		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(ink).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+		if p.Host != "" {
+			info := a.hostInfos[p.Host]
+			col := pal.TextFaint
+			if info != nil {
+				switch info.Status {
+				case "online":
+					col = pal.TextMuted
+				case "offline":
+					col = pal.Bad
+				}
+			}
+			tip := a.hostName(p.Host)
+			if info != nil {
+				tip += " · " + info.Status
+				if info.Err != "" {
+					tip = info.Err
+				}
+			}
+			badge := ui.ButtonBase(c.Key("host-"+p.Host)).Label("Host "+a.hostName(p.Host)).
+				Padding(0, 4).Radius(5).Shrink(0).Tooltip(tip)
+			if badge.Hovered() {
+				badge.Background(pal.Hover)
+			}
+			badge.Children(func() {
+				ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, iconServer).Size(10, 10).TextColor(col)
+					ui.Text(c, a.hostName(p.Host)).FontSize(10.5).TextColor(col).SingleLine()
+				})
+			})
+			if badge.Clicked() {
+				if _, ok := a.hostByID(p.Host); ok {
+					a.openSettings("host:" + p.Host)
+				} else {
+					a.openSettings("hosts")
+				}
+			}
+			inner = inner || badge.Hovered()
+		}
 		if hovered {
 			plus := a.cmdButton(c, iconPlus, 12, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
 				a.addItems(m, i, false)
@@ -340,16 +382,19 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 // offer them; withProject adds Open Project…, for the sidebar's own +.
 func (a *appState) addItems(m *ui.Menu, pi int, withProject bool) {
 	if pi >= 0 && pi < len(a.projects) {
+		remote := a.projects[pi].Host != ""
 		if m.Item("New Session").Chosen() {
 			a.newSessionIn(pi)
 		}
-		if m.Item("New Agent…").Chosen() {
-			a.switchProject(pi)
-			a.openWorktreeDialog(pi)
-		}
-		if m.Item("Add Process…").Chosen() {
-			a.switchProject(pi)
-			a.openProcessDialog(pi, nil)
+		if !remote {
+			if m.Item("New Agent…").Chosen() {
+				a.switchProject(pi)
+				a.openWorktreeDialog(pi)
+			}
+			if m.Item("Add Process…").Chosen() {
+				a.switchProject(pi)
+				a.openProcessDialog(pi, nil)
+			}
 		}
 	}
 	if withProject {
@@ -358,6 +403,9 @@ func (a *appState) addItems(m *ui.Menu, pi int, withProject bool) {
 		}
 		if m.Item("Open Project…").Chosen() {
 			a.openProjectDialog()
+		}
+		if m.Item("New Project on a Host…").Chosen() {
+			a.openRemoteProjectDialog()
 		}
 	}
 }

@@ -3,6 +3,29 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.15.0
+
+Sessions on another computer, over SSH.
+
+### Remote hosts
+
+- **Settings › Hosts** adds another computer. Its projects sit in the
+  sidebar with this computer's, and **New Project on a Host…** opens a
+  folder there. The terminal, the agent and the `omaterm` command run on
+  that computer; closing the window leaves its sessions running.
+- **omaterm installs itself on the host**, as VS Code installs its server:
+  when the host has no omaterm, or one from another build, the app copies
+  the build it is running there, links the command, and starts the daemon.
+  Updating omaterm updates the host on the next connection.
+- **A host that is offline** says so above its panes, with Retry and a link
+  to its settings. Its badge in the sidebar does the same.
+- **Files, Git, processes, worktrees and Dev URLs stay on this computer**
+  for a remote project. Its terminal sessions work; the rest says what is
+  not there yet.
+- Remote hosts are Linux, and the automatic install needs the same kind of
+  processor as this computer; another kind needs the matching build
+  installed on it once.
+
 ## 0.14.5
 
 The file tree keeps going as deep as you open it.

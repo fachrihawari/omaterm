@@ -170,6 +170,7 @@ func (a *appState) view(c *ui.Context) {
 
 	a.webPairDialog(c)
 	a.worktreeDialog(c)
+	a.remoteProjectDialog(c)
 	a.processDialog(c)
 	a.trustDialog(c)
 	a.mergeDialog(c)
@@ -206,7 +207,7 @@ func (a *appState) view(c *ui.Context) {
 func (a *appState) modalOpen() bool {
 	return a.closeTabConfirmOpen != nil || a.quitAsk != nil || a.overwriteAsk != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
 		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil || a.wtNew != nil || a.wtMerge != nil || a.review != nil ||
-		a.trustAsk != nil || a.processDialogOpen()
+		a.trustAsk != nil || a.remoteProject != nil || a.processDialogOpen()
 }
 
 func (a *appState) wash(e ui.Element) {
@@ -304,6 +305,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 				a.ignoredDaemonBanner(c)
 				a.crashBanner(c)
 				a.daemonBanner(c)
+				a.remoteBanner(c)
 				a.agentSetupBanner(c)
 				a.mergeAskBanner(c)
 				// No pane starts until the user chose what runs it: a card

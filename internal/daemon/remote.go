@@ -20,17 +20,31 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/client"
 	"omaterm/internal/paths"
-	"omaterm/internal/peer"
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/web"
 )
 
+// Transport opens a connection to a session daemon and names it in
+// errors: a Unix socket here, or a bridge over SSH.
+type Transport struct {
+	Name string
+	Dial func() (net.Conn, error)
+}
+
+// LocalTransport returns the transport of the daemon at socket.
+func LocalTransport(socket string) Transport {
+	return Transport{Name: socket, Dial: func() (net.Conn, error) { return client.DialConn(socket) }}
+}
+
 // Remote is the app's hold on the daemon's panes: a session.Host whose
 // panes the daemon runs, which outlive the app.
 type Remote struct {
-	socket string
+	transport Transport
+	// remote is set for a daemon on another computer: new panes get that
+	// daemon's PATH and control socket, and its app's display isn't ours.
+	remote bool
 	// quickly is how long a reconnect tries every 100ms (10s when 0).
 	quickly time.Duration
 	// viewed is the session the user looks at, sentViewed the last the
@@ -73,13 +87,14 @@ var _ session.Host = (*Remote)(nil)
 // runs.
 func Connect(start bool) (*Remote, error) {
 	socket := paths.DaemonSocketPath()
-	c, err := client.Dial(socket)
+	t := LocalTransport(socket)
+	c, err := dialTransport(t)
 	if errors.Is(err, client.ErrUnreachable) && start {
 		if err = StartProcess(); err != nil {
 			return nil, err
 		}
 		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			if c, err = client.Dial(socket); err == nil {
+			if c, err = dialTransport(t); err == nil {
 				break
 			}
 		}
@@ -87,7 +102,42 @@ func Connect(start bool) (*Remote, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRemote(c, socket)
+	return newRemote(c, t)
+}
+
+// ConnectRemote connects to the daemon of another computer through t. The
+// transport starts the daemon when it can, as the SSH bridge does.
+func ConnectRemote(t Transport) (*Remote, error) {
+	c, err := dialTransport(t)
+	if err != nil {
+		return nil, err
+	}
+	// A daemon started by a login service doesn't know the app reaches it
+	// over a bridge; older daemons have no method, and their options say.
+	c.Call("host.remote", nil, nil)
+	return newRemote(c, t, func(r *Remote) {
+		r.remote = true
+		// The bridge starts the daemon when it isn't running; a spawn
+		// would run here, in the app's sessions.
+		r.Spawn = nil
+	})
+}
+
+// dialTransport opens a control connection through t, naming t in the
+// error.
+func dialTransport(t Transport) (*client.Client, error) {
+	if t.Dial == nil {
+		return nil, errors.New("no transport")
+	}
+	conn, err := t.Dial()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", t.Name, err)
+	}
+	c, err := client.New(conn)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", t.Name, err)
+	}
+	return c, nil
 }
 
 // Dial connects to a daemon at a socket (tests).
@@ -102,11 +152,11 @@ func dialWith(socket string, set func(*Remote)) (*Remote, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRemote(c, socket, set)
+	return newRemote(c, LocalTransport(socket), set)
 }
 
-func newRemote(c *client.Client, socket string, set ...func(*Remote)) (*Remote, error) {
-	r := &Remote{socket: socket, infos: map[string]session.Info{}, changed: map[string]chan struct{}{},
+func newRemote(c *client.Client, t Transport, set ...func(*Remote)) (*Remote, error) {
+	r := &Remote{transport: t, infos: map[string]session.Info{}, changed: map[string]chan struct{}{},
 		handles: map[string]*remotePane{}, any: make(chan struct{}, 1), Spawn: func() error { return startProcess(true) }}
 	for _, fn := range set {
 		if fn != nil {
@@ -132,14 +182,20 @@ func (r *Remote) use(c *client.Client) error {
 		return err
 	}
 	// New panes see the display and session bus of the app's login
-	// session, which may be newer than the daemon's.
-	env := map[string]string{}
-	for _, k := range SharedEnv {
-		if v, ok := os.LookupEnv(k); ok {
-			env[k] = v
+	// session, which may be newer than the daemon's. A daemon on another
+	// computer has its own: the app's display and SSH agent are not its.
+	r.mu.Lock()
+	remote := r.remote
+	r.mu.Unlock()
+	if !remote {
+		env := map[string]string{}
+		for _, k := range SharedEnv {
+			if v, ok := os.LookupEnv(k); ok {
+				env[k] = v
+			}
 		}
+		c.Call("env.update", env, nil)
 	}
-	c.Call("env.update", env, nil)
 	r.mu.Lock()
 	r.c, r.version = c, c.Welcome.App
 	// A new daemon, or one the app left, knows of no session viewed: the
@@ -223,12 +279,12 @@ func (r *Remote) reconnect() {
 		if closed {
 			return
 		}
-		c, err := client.Dial(r.socket)
+		c, err := dialTransport(r.transport)
 		if err != nil && r.Spawn != nil {
 			r.Spawn()
 			for i := 0; i < 50 && err != nil; i++ {
 				time.Sleep(100 * time.Millisecond)
-				c, err = client.Dial(r.socket)
+				c, err = dialTransport(r.transport)
 			}
 		}
 		if err != nil {
@@ -466,8 +522,11 @@ func sameInfo(a, b session.Info) bool {
 
 // Start starts a pane in the daemon.
 func (r *Remote) Start(o session.StartOptions) (session.Handle, error) {
+	if c := r.client(); c == nil || c.Closed() {
+		return nil, proto.Errorf(proto.CodeBusy, "the session daemon is reconnecting")
+	}
 	p := StartParams{ID: o.ID, Session: o.Session, Project: o.Project, ProjectName: o.ProjectName, ProjectDir: o.ProjectDir,
-		Dir: o.Dir, Command: o.Command, Exec: o.Exec, Env: o.Env, Cols: o.Cols, Rows: o.Rows, History: o.History, Role: o.Role}
+		Dir: o.Dir, Command: o.Command, Exec: o.Exec, Env: o.Env, RemoteEnv: r.remote, Cols: o.Cols, Rows: o.Rows, History: o.History, Role: o.Role}
 	var info session.Info
 	if err := r.call("pane.start", p, &info); err != nil {
 		return nil, err
@@ -726,7 +785,7 @@ func (p *remotePane) Term() *terminal.Terminal {
 	if p.term != nil {
 		return p.term
 	}
-	s, err := attach(p.r.socket, p.id)
+	s, err := attach(p.r.transport, p.id)
 	if err != nil {
 		return nil
 	}
@@ -874,17 +933,13 @@ func (s *stream) setTerm(t *terminal.Terminal) {
 	}
 }
 
-func attach(socket, pane string) (*stream, error) {
-	conn, err := net.DialTimeout("unix", socket, 2*time.Second)
+func attach(t Transport, pane string) (*stream, error) {
+	conn, err := t.Dial()
 	if err != nil {
 		return nil, err
 	}
-	// As client.Dial checks: another user's daemon must not get what is
-	// typed into the pane.
-	if uid := peer.UID(conn); uid >= 0 && uid != os.Getuid() {
-		conn.Close()
-		return nil, fmt.Errorf("the daemon's socket %s belongs to another user", socket)
-	}
+	// A socket transport already checked the owner; a bridge's
+	// connection is the app's own SSH session.
 	if err := json.NewEncoder(conn).Encode(proto.Hello{Kind: "attach", Version: proto.Version, Pane: pane}); err != nil {
 		conn.Close()
 		return nil, err

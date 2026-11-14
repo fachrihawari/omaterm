@@ -233,7 +233,7 @@ func TestAttachGivesUp(t *testing.T) {
 		}
 	}()
 	done := make(chan error, 1)
-	go func() { _, err := attach(socket, "p1"); done <- err }()
+	go func() { _, err := attach(LocalTransport(socket), "p1"); done <- err }()
 	select {
 	case err := <-done:
 		if err == nil {

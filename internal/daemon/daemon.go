@@ -68,6 +68,10 @@ type Options struct {
 	// Restore starts the sessions of state.json at once, from their
 	// scrollback, as a service does at login: no app is there to.
 	Restore bool
+	// Remote is a daemon on another computer, run by the app's bridge: it
+	// owns no sessions, saves no state, and serves the app that is
+	// connected, not one of its own.
+	Remote bool
 	// ProxyAddr is where the Dev URLs proxy listens: 127.0.0.1:443 when
 	// empty (tests give a free port).
 	ProxyAddr string
@@ -94,6 +98,9 @@ type Daemon struct {
 	limit   notice.Limiter
 	// deskAt is when the desktop app last sent input, unix ms (push.go).
 	deskAt atomic.Int64
+	// remote is set when the app reaches this daemon over its bridge:
+	// the app on the other end owns the sessions.
+	remote atomic.Bool
 	// stateMu orders the changes to state.json the daemon makes while no
 	// app runs.
 	stateMu      sync.Mutex
@@ -234,6 +241,7 @@ func Start(opts Options) (*Daemon, error) {
 		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}, watchers: map[int]func(){},
 		procProjects: map[string]model.Project{}, procMtimes: map[string]fileStamp{},
 		devRouter: devurl.NewRouter(), shares: map[procKey]*share{}, shareNotes: map[procKey]string{}, voice: opts.Voice}
+	d.remote.Store(opts.Remote)
 	d.procs = procs.New(daemonRunner{d: d}, procs.OpenTrust(procs.TrustPath()))
 	d.procs.OnEvent = d.processEvent
 	d.procs.OnChange = func() {
@@ -477,8 +485,11 @@ type StartParams struct {
 	Command                   []string
 	Exec                      bool
 	Env                       []string
-	Cols, Rows                int
-	History                   []byte
+	// RemoteEnv makes the daemon give the pane its own PATH and control
+	// socket: the app's are not the ones of the computer it runs on.
+	RemoteEnv  bool
+	Cols, Rows int
+	History    []byte
 }
 
 // Handle runs a method of the daemon's socket.
@@ -515,6 +526,11 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 	switch method {
 	case "version":
 		return map[string]any{"app": d.opts.Version, "proto": proto.Version, "pid": os.Getpid()}, nil
+	case "host.remote":
+		// The app reaches this daemon through its bridge: that app owns
+		// the sessions, even if a service started the daemon at login.
+		d.remote.Store(true)
+		return true, nil
 	case "panes":
 		return d.reg.Infos(), nil
 	case "process.list", "process.start", "process.stop", "process.restart", "process.trust", "process.sync", "process.share", "process.unshare":
@@ -527,8 +543,20 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		if pn := d.reg.Get(p.ID); pn != nil {
 			return pn.Info(), nil
 		}
+		env := append(d.envList(), p.Env...)
+		if p.RemoteEnv {
+			// The app's PATH and control socket mean nothing on this
+			// computer: the daemon's own do.
+			env = append(d.paneEnv(), p.Env...)
+		}
+		history := p.History
+		if history == nil && p.RemoteEnv {
+			// The app has no scrollback of a remote pane: this daemon
+			// kept its last one, from before it restarted.
+			history = session.RestoredHistory(d.historyPath(p.ID))
+		}
 		o := session.StartOptions{ID: p.ID, Session: p.Session, Project: p.Project, ProjectName: p.ProjectName, ProjectDir: p.ProjectDir, Role: p.Role,
-			Dir: p.Dir, Command: p.Command, Exec: p.Exec, Env: append(d.envList(), p.Env...), Cols: p.Cols, Rows: p.Rows, History: p.History,
+			Dir: p.Dir, Command: p.Command, Exec: p.Exec, Env: env, Cols: p.Cols, Rows: p.Rows, History: history,
 			Theme: d.currentTheme()}
 		d.termPrefs().apply(&o)
 		pn, err := d.reg.Start(o)

@@ -32,7 +32,7 @@ func (h *localHost) createWorktree(ctx context.Context, p proto.CreateParams) (a
 		if len(a.projects) == 0 && p.Dir == "" {
 			return nil, proto.Errorf(proto.CodeUsage, "no project: give a directory")
 		}
-		pi := a.projectFor(p.Project, p.Dir)
+		pi := a.projectFor(p.Project, p.Dir, p.Host)
 		if pi < 0 || pi >= len(a.projects) {
 			return nil, proto.Errorf(proto.CodeNotFound, "no project "+p.Project)
 		}

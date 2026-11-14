@@ -243,7 +243,11 @@ func run(args []string) error {
 			return printJSON(st.Projects)
 		}
 		for _, p := range st.Projects {
-			fmt.Printf("%s  %-20s %s\n", p.ID, p.Name, shortDir(p.Dir))
+			where := shortDir(p.Dir)
+			if p.Host != "" {
+				where = p.Host + ":" + p.Dir
+			}
+			fmt.Printf("%s  %-20s %s\n", p.ID, p.Name, where)
 		}
 		return nil
 

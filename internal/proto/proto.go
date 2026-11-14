@@ -154,6 +154,7 @@ type Project struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Dir  string `json:"dir"`
+	Host string `json:"host,omitempty"`
 }
 
 // State is everything: projects, their sessions, and the session the
@@ -183,7 +184,10 @@ type Port struct {
 
 // CreateParams make a session (create) or a pane beside one (split).
 type CreateParams struct {
-	Project string   `json:"project,omitempty"` // id or name; else by Dir, else the shown one
+	Project string `json:"project,omitempty"` // id or name; else by Dir, else the shown one
+	// Host is the remote host the session belongs to; empty for this
+	// computer. The app fills it in for a remote host's command.
+	Host    string   `json:"host,omitempty"`
 	Name    string   `json:"name,omitempty"`
 	Dir     string   `json:"dir,omitempty"`
 	Command []string `json:"command,omitempty"`
@@ -398,6 +402,7 @@ type AgentSessionResult struct {
 type ProjectParams struct {
 	Name string `json:"name,omitempty"`
 	Dir  string `json:"dir"`
+	Host string `json:"host,omitempty"` // empty for this computer
 }
 
 type DoParams struct {

@@ -12,7 +12,6 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
-	"omaterm/internal/daemon"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/service"
@@ -24,6 +23,10 @@ import (
 func (a *appState) openOverlay(k overlayKind) {
 	if a.modalOpen() {
 		return // a dialog waits for its answer first
+	}
+	if a.projectIsRemote() && (k == overlayQuickOpen || k == overlayGlobalSearch || k == overlayBranch) {
+		a.toast(nil, "Git and files on a remote host stay there for now: use the terminal, or work on them over SSH.")
+		return
 	}
 	// What the one open did goes with it: a project search still running.
 	a.closeOverlay()
@@ -814,7 +817,7 @@ func (a *appState) applySettings() {
 	})
 	if b := a.termBehavior(); b != a.termMade {
 		a.termMade = b
-		if r, ok := a.panes.(*daemon.Remote); ok {
+		if r := a.localRemote(); r != nil {
 			r.Each(func(p session.Handle) {
 				if p.TermIfOpen() != nil {
 					r.Detach(p.ID())

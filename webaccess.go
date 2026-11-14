@@ -36,10 +36,7 @@ func (a *appState) webAvailable() bool { return webDaemonRuns(a) }
 
 // webDaemonRuns is webAvailable's answer; tests replace it, to draw the
 // pages as they are with the daemon.
-var webDaemonRuns = func(a *appState) bool {
-	_, ok := a.panes.(*daemon.Remote)
-	return ok
-}
+var webDaemonRuns = func(a *appState) bool { return a.localRemote() != nil }
 
 // setWeb turns web access on or off.
 func (a *appState) setWeb(c *ui.Context, on bool) {

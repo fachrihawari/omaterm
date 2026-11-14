@@ -482,6 +482,25 @@ over HTTPS (Tailscale or Cloudflare) for its microphone.
 
 <br clear="right">
 
+### Sessions on another computer
+
+**Settings → Hosts** adds a computer over SSH. Its projects then sit in the
+sidebar with this computer's, and **New Project on a Host…** opens a folder
+there; the sessions, their panes and the `omaterm` command in them run on that
+computer. omaterm must be installed there at the same version, and ssh must
+reach it with a key without asking for anything (an agent, or a key with no
+passphrase): the window never prompts.
+
+The app runs omaterm's bridge on the host, which starts the session daemon
+there when it isn't running. Closing the window leaves the sessions running
+on the host. Agent hooks belong on the host too: run `omaterm skill setup`
+there, or point the agent's settings at the command there.
+
+Files, Git, processes, worktrees and Dev URLs stay on this computer for now:
+a remote project's terminal sessions work, the rest says so and waits for a
+later version. The host can make and close its own sessions and read its
+panes; it cannot use the app's local features.
+
 ### Browser panes
 
 `Ctrl+Shift+O` opens a web page next to your terminals, as does

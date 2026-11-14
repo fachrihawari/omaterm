@@ -129,7 +129,7 @@ func TestSidebarAddMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr.Frame()
-	want := []string{"New Session", "New Agent…", "Add Process…", "-", "Open Project…"}
+	want := []string{"New Session", "New Agent…", "Add Process…", "-", "Open Project…", "New Project on a Host…"}
 	if got := tr.Menu(); !slices.Equal(got, want) {
 		t.Fatalf("the + menu lists %q, want %q", tr.Menu(), want)
 	}

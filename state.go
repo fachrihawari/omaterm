@@ -357,6 +357,16 @@ type appState struct {
 	// is a copy of every pane's Info as of the last sync (syncStatus),
 	// which views read without locks.
 	panes session.Host
+	// hosts is panes as the hosts behind them: this computer's and the
+	// remote ones'. panes is hosts, so every view and call site keeps one
+	// host while the local one can change (a daemon taking over).
+	hosts *multiHost
+	// hostInfos is each remote host's connection as the UI shows it, and
+	// hostStops cancels its connection goroutine. Both are UI thread's;
+	// the connection goroutines post their changes.
+	hostInfos map[string]*hostInfo
+	hostStops map[string]context.CancelFunc
+	hostForm  remoteHostForm
 	// panesRef is panes for goroutines (offPanes): setPanes swaps panes on
 	// the UI thread, and a goroutine reading the field meanwhile raced it.
 	panesRef atomic.Pointer[hostRef]
@@ -406,8 +416,9 @@ type appState struct {
 	hookChecked     map[string]bool
 	// wtNew and wtMerge are the New Agent and Merge dialogs, open while
 	// set; wtAgent, wtUse, wtEnv and mergeSquash their last choices.
-	wtNew   *worktreeNew
-	wtMerge *worktreeMerge
+	wtNew         *worktreeNew
+	wtMerge       *worktreeMerge
+	remoteProject *remoteProjectAsk
 	// mergeAsks are agents' asks to merge into the main checkout, waiting
 	// for the user (mergeAskBanner).
 	mergeAsks   []*mergeAsk
@@ -462,7 +473,12 @@ type appState struct {
 	// renameFocused tells the rename field had the keyboard.
 	renameFocused bool
 	paneFailed    map[string]bool
-	status        map[string]session.Info
+	// paneErr is why a pane's shell didn't start, as the pane says.
+	paneErr map[string]string
+	// paneWaiting are panes whose host isn't connected yet, by pane ID:
+	// they start as it does.
+	paneWaiting map[string]string
+	status      map[string]session.Info
 
 	// settings are the user's preferences (settings.json); themeMode is
 	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
@@ -600,7 +616,10 @@ type fileNode struct {
 
 type project struct {
 	// ID names the project in state.json and to the CLI.
-	ID        string
+	ID string
+	// Host is the remote host the project lives on; empty for this
+	// computer.
+	Host      string
 	Collapsed bool
 	Name      string
 	Path      string // absolute path; expanded from ~ at load
@@ -627,7 +646,11 @@ func newApp() *appState {
 		graphLimit:       300,
 		editors:          map[string]*openFile{},
 		panes:            session.NewLocalHost(),
+		hostInfos:        map[string]*hostInfo{},
+		hostStops:        map[string]context.CancelFunc{},
 		paneFailed:       map[string]bool{},
+		paneErr:          map[string]string{},
+		paneWaiting:      map[string]string{},
 		wtEnv:            true,
 		wtUse:            true,
 		mergeSquash:      true,
@@ -655,6 +678,8 @@ func newApp() *appState {
 		settings:         loadSettings(),
 	}
 	a.launchSettings = a.settings
+	a.hosts = newMultiHost(a.panes)
+	a.panes = a.hosts
 	a.hookPanes()
 	if cfg, err := webStore().Config(); err == nil {
 		a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
@@ -785,6 +810,13 @@ func (a *appState) start() {
 // and processes. setProject calls it; so does start, once the window
 // exists, since loads begun before it had no window to report to.
 func (a *appState) loadProjectData() {
+	if a.projectIsRemote() {
+		// Its files, git and processes are on the host; the app has none
+		// of them to read here.
+		a.stopProcessRefresh()
+		a.processes, a.ports, a.processErr, a.processWarn = nil, nil, "", ""
+		return
+	}
 	if a.procHost != nil {
 		a.procHost.Sync()
 		a.refreshProcList()
@@ -854,6 +886,10 @@ func (a *appState) clearWorkspace() {
 
 // refreshRepos discovers repos and loads their status, off the UI thread.
 func (a *appState) refreshRepos() {
+	if a.projectIsRemote() {
+		a.repos, a.repoErr = nil, ""
+		return
+	}
 	workspace := a.workspace
 	win := a.win
 	worktrees := a.worktreeDirs()
@@ -987,6 +1023,10 @@ func (a *appState) paneShells() []int {
 }
 
 func (a *appState) refreshProcesses() {
+	if a.projectIsRemote() {
+		a.processes, a.ports, a.processErr, a.processWarn = nil, nil, "", ""
+		return
+	}
 	workspace := a.workspace
 	roots := a.paneShells()
 	// In test mode (no window) run synchronously to avoid goroutine races.
@@ -1080,6 +1120,9 @@ func (a *appState) stopSystemStats() {
 // status bar counts them whatever the inspector shows.
 func (a *appState) startProcessRefresh() {
 	a.stopProcessRefresh()
+	if a.projectIsRemote() {
+		return
+	}
 	a.refreshProcesses()
 	if a.win == nil {
 		return // no timer in test mode
@@ -1111,6 +1154,10 @@ func (a *appState) stopProcessRefresh() {
 
 // rebuildFileIndex refreshes the quick-open file index.
 func (a *appState) rebuildFileIndex() {
+	if a.projectIsRemote() {
+		a.fileIndex = nil
+		return
+	}
 	workspace := a.workspace
 	win := a.win
 	if workspace == "" || win == nil {
@@ -1148,6 +1195,10 @@ func branchDelta(ahead, behind int) string {
 
 // rebuildFileTree builds the inspector file tree from the real workspace.
 func (a *appState) rebuildFileTree() {
+	if a.projectIsRemote() {
+		a.fileTree, a.newEntry = nil, nil
+		return
+	}
 	p := a.project()
 	rootName := "workspace"
 	if p != nil {

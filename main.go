@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -115,11 +116,21 @@ func (a *appState) openFromArgs(args []string, wd string) {
 }
 
 func main() {
+	// The bridge the app runs over SSH: no window, the remote daemon's
+	// control connection.
+	if len(os.Args) > 1 && os.Args[1] == "__bridge" {
+		if err := runBridge(); err != nil {
+			fmt.Fprintln(os.Stderr, "omaterm __bridge:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	// The session daemon the app starts: no window, the panes' shells.
 	if len(os.Args) > 1 && os.Args[1] == "__daemon" {
 		crash.Watch(paths.StateDir(), "daemon", appVersion())
 		err := daemon.Run(daemon.Options{Version: daemon.Build(appVersion()),
-			Serve: os.Getenv("OMATERM_SERVICE") != "", Restore: os.Getenv("OMATERM_SERVICE") != ""})
+			Serve: os.Getenv("OMATERM_SERVICE") != "", Restore: os.Getenv("OMATERM_SERVICE") != "",
+			Remote: os.Getenv("OMATERM_REMOTE") != ""})
 		if err != nil {
 			log.Print(err)
 			os.Exit(1)
@@ -238,6 +249,7 @@ func main() {
 		})
 		a.start()
 		a.startControl()
+		a.startHosts()
 		a.openFromArgs(os.Args[1:], "")
 	})
 	if err := mygo.App.Run(); err != nil {

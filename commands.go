@@ -42,6 +42,8 @@ var commandRegistry = append([]Command{
 		Run: func(a *appState, c *ui.Context) { a.openOverlay(overlayGlobalSearch) }},
 	{ID: "app.openProject", Title: "Open Project…", Category: "App",
 		Run: func(a *appState, c *ui.Context) { a.openProjectDialog() }},
+	{ID: "app.openRemoteProject", Title: "New Project on a Host…", Category: "App",
+		Run: func(a *appState, c *ui.Context) { a.openRemoteProjectDialog() }},
 	{ID: "app.quit", Title: "Quit omaterm", Category: "App",
 		Run: func(a *appState, c *ui.Context) { mygo.App.Quit() }},
 	{ID: "app.checkUpdates", Title: "Check for Updates…", Category: "App",

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/daemon"
 	"omaterm/internal/session"
 )
 
@@ -45,19 +46,42 @@ func (a *appState) startPanes() {
 	}()
 }
 
-// setPanes makes h the panes' host. When the old one's changes were
-// followed, h's are followed instead: still waiting on the old host,
-// the status froze for the rest of the run after a session daemon took
-// over ("Restart Sessions").
+// setPanes makes h the host of this computer's panes. Remote hosts stay
+// in the composite: a daemon taking over does not drop them. When the old
+// host's changes were followed, h's are followed instead: still waiting
+// on the old host, the status froze for the rest of the run after a
+// session daemon took over ("Restart Sessions").
 func (a *appState) setPanes(h session.Host) {
-	a.panes = h
-	a.panesRef.Store(&hostRef{h})
-	a.lastViewed = "\x00" // the new host is told the session on screen
-	if a.panesStop != nil {
-		a.panesStop()
-		a.startPanes()
+	if a.hosts == nil {
+		a.panes = h
+		a.panesRef.Store(&hostRef{h})
+	} else {
+		a.hosts.setLocal(h)
+		a.panes = a.hosts
+		a.panesRef.Store(&hostRef{a.hosts})
 	}
-	a.pushWebTheme() // a daemon taking over learns the look too
+	a.lastViewed = "\x00" // the new host is told the session on screen
+	a.pushWebTheme()      // a daemon taking over learns the look too
+}
+
+// localHost is this computer's panes, wherever they run.
+func (a *appState) localHost() session.Host {
+	if a.hosts != nil {
+		return a.hosts.localHost()
+	}
+	return a.panes
+}
+
+// localRemote is this computer's session daemon, nil when panes run here
+// or the panes moved to another host. The app's own features that need
+// the daemon (web access, dictation, the mailbox) ask for this one: a
+// remote host's daemon serves its own panes, not the app's.
+func (a *appState) localRemote() *daemon.Remote {
+	if a.hosts != nil {
+		return a.hosts.localRemote()
+	}
+	r, _ := a.panes.(*daemon.Remote)
+	return r
 }
 
 // hostRef holds a host for panesRef.
@@ -108,6 +132,9 @@ func (a *appState) syncStatus() {
 	}
 	dirs := map[string]bool{}
 	for _, i := range next {
+		if a.hosts != nil && a.hosts.hostOfPane(i.ID) != "" {
+			continue // a remote pane's folder is not here to watch
+		}
 		if d := i.WorkDir(); d != "" {
 			dirs[d] = dirs[d] || i.Status == session.Working
 		}

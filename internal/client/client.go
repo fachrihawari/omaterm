@@ -53,6 +53,26 @@ var helloVersion = proto.Version
 
 // Dial connects to the socket at path.
 func Dial(path string) (*Client, error) {
+	conn, err := DialConn(path)
+	if err != nil {
+		return nil, err
+	}
+	c, err := New(conn)
+	if err != nil {
+		if errors.Is(err, ErrUnreachable) {
+			// It took the connection but said nothing, or said
+			// something that isn't a welcome: it runs, and is stuck.
+			return nil, fmt.Errorf("%w: it doesn't answer (%s: %v)", ErrUnreachable, path, err)
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+// DialConn opens a connection to the socket at path, checking that it is
+// this user's. A transport of its own, as a bridge over SSH, takes over
+// with New instead.
+func DialConn(path string) (net.Conn, error) {
 	conn, err := net.DialTimeout("unix", path, 2*time.Second)
 	if err != nil {
 		// Not there, or no one listening: not running. Anything else is
@@ -68,6 +88,13 @@ func Dial(path string) (*Client, error) {
 		conn.Close()
 		return nil, fmt.Errorf("%w: its socket %s belongs to another user", ErrUnreachable, path)
 	}
+	return conn, nil
+}
+
+// New takes over conn as a control connection: it says the client's hello
+// and reads the daemon's welcome. A connection of another transport, as
+// an SSH bridge, comes this way.
+func New(conn net.Conn) (*Client, error) {
 	c := &Client{conn: conn, enc: json.NewEncoder(conn), calls: map[int64]chan proto.Message{},
 		events: make(chan proto.Message, 64), closed: make(chan struct{})}
 	if err := c.enc.Encode(proto.Hello{Kind: "control", Version: helloVersion, Client: "omaterm"}); err != nil {
@@ -79,9 +106,7 @@ func Dial(path string) (*Client, error) {
 	line, err := proto.ReadLine(r, 64<<10)
 	if err != nil {
 		conn.Close()
-		// It took the connection but said nothing in 5 seconds: it runs,
-		// and is stuck.
-		return nil, fmt.Errorf("%w: it doesn't answer (%s)", ErrUnreachable, path)
+		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 	conn.SetReadDeadline(time.Time{})
 	if err := json.Unmarshal(line, &c.Welcome); err != nil {
@@ -132,6 +157,16 @@ func (c *Client) read(r *bufio.Reader) {
 		if ch != nil {
 			ch <- m
 		}
+	}
+}
+
+// Closed tells whether the connection has ended.
+func (c *Client) Closed() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
 	}
 }
 

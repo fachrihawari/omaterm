@@ -43,6 +43,10 @@ type Settings struct {
 	ControlSocket bool `json:"controlSocket"`
 	RemoteControl bool `json:"remoteControl"`
 
+	// Hosts are the other computers whose sessions show here, reached
+	// over SSH.
+	Hosts []RemoteHost `json:"hosts,omitempty"`
+
 	// Daemon runs the sessions' shells in a process of their own, so
 	// they go on when the window closes.
 	Daemon          bool `json:"daemon"`
@@ -68,6 +72,15 @@ type Settings struct {
 	// Voice is voice input in web access, which the daemon reads too: off
 	// until turned on.
 	Voice voice.Settings `json:"voice"`
+}
+
+// RemoteHost is another computer whose sessions show in omaterm: its
+// daemon is reached over SSH.
+type RemoteHost struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// SSH is the host or user@host ssh takes, else a ~/.ssh/config alias.
+	SSH string `json:"ssh"`
 }
 
 // NotifySettings choose which session changes notify while you look away.

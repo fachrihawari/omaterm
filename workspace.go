@@ -173,8 +173,14 @@ func (a *appState) adoptSavedSessions() {
 				if p.ID != s.Project || a.savedIDs[p.ID] {
 					continue // removed here since the last save
 				}
-				if info, err := os.Stat(p.Dir); err == nil && info.IsDir() {
-					a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: p.Dir})
+				ok := p.Host != ""
+				if !ok {
+					if info, err := os.Stat(p.Dir); err == nil && info.IsDir() {
+						ok = true
+					}
+				}
+				if ok {
+					a.projects = append(a.projects, project{ID: p.ID, Host: p.Host, Name: p.Name, Path: p.Dir})
 					pi = len(a.projects) - 1
 				}
 			}
@@ -306,15 +312,22 @@ func (a *appState) loadState() int {
 	a.projects = nil
 	active := 0
 	for _, p := range st.Projects {
-		abs, err := filepath.Abs(p.Dir)
-		if p.Dir == "" || err != nil {
-			continue
-		}
-		if info, err := os.Stat(abs); err != nil || !info.IsDir() {
-			// Its folder is gone for now (an unplugged drive, a rename):
-			// keep it and its sessions, whose panes go on running.
-			p.Dir = abs
-			a.unavailable = append(a.unavailable, p)
+		dir := p.Dir
+		if p.Host == "" {
+			abs, err := filepath.Abs(p.Dir)
+			if p.Dir == "" || err != nil {
+				continue
+			}
+			dir = abs
+			if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+				// Its folder is gone for now (an unplugged drive, a
+				// rename): keep it and its sessions, whose panes go on
+				// running.
+				p.Dir = abs
+				a.unavailable = append(a.unavailable, p)
+				continue
+			}
+		} else if p.Dir == "" {
 			continue
 		}
 		if p.ID == "" {
@@ -323,7 +336,7 @@ func (a *appState) loadState() int {
 		if p.ID == st.ActiveProject {
 			active = len(a.projects)
 		}
-		a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: abs, Collapsed: p.Collapsed,
+		a.projects = append(a.projects, project{ID: p.ID, Host: p.Host, Name: p.Name, Path: dir, Collapsed: p.Collapsed,
 			ActiveSession: p.ActiveSession, Processes: append([]procs.Def(nil), p.Processes...)})
 	}
 	for _, s := range st.Sessions {
@@ -359,10 +372,12 @@ func (a *appState) state() model.State {
 	}
 	for _, p := range a.projects {
 		abs, err := filepath.Abs(p.Path)
-		if err != nil {
+		if err != nil || p.Host != "" {
+			// A remote path is the host's own: the app's filepath is not
+			// the one that says where it is.
 			abs = p.Path
 		}
-		mp := model.Project{ID: p.ID, Name: p.Name, Dir: abs, Collapsed: p.Collapsed, ActiveSession: p.ActiveSession,
+		mp := model.Project{ID: p.ID, Host: p.Host, Name: p.Name, Dir: abs, Collapsed: p.Collapsed, ActiveSession: p.ActiveSession,
 			Processes: append([]procs.Def(nil), p.Processes...)}
 		tabs := a.projectTabs(p.ID)
 		if tabs == nil {

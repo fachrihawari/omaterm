@@ -155,7 +155,7 @@ func (a *appState) replaceRefusedDaemon() {
 		}
 		a.post(func() {
 			a.useDaemon()
-			if _, ok := a.panes.(*daemon.Remote); ok {
+			if a.localRemote() != nil {
 				a.queuedToasts = append(a.queuedToasts, "Session daemon restarted: sessions restored")
 			}
 		})
@@ -391,8 +391,8 @@ func (a *appState) dismissCrashes() {
 // restartDaemon stops the session daemon and starts this version's: the
 // sessions start again from their scrollback, agents resuming.
 func (a *appState) restartDaemon() bool {
-	r, ok := a.panes.(*daemon.Remote)
-	if !ok {
+	r := a.localRemote()
+	if r == nil {
 		return false
 	}
 	a.saveState()
@@ -408,8 +408,14 @@ const hiddenDetach = 10 * time.Minute
 // detachHidden lets go of the terminals of the daemon panes not shown for
 // hiddenDetach; showing one attaches it again. UI thread.
 func (a *appState) detachHidden(now time.Time) {
-	r, ok := a.panes.(*daemon.Remote)
-	if !ok {
+	var remotes []*daemon.Remote
+	if r := a.localRemote(); r != nil {
+		remotes = append(remotes, r)
+	}
+	if a.hosts != nil {
+		remotes = append(remotes, a.hosts.remoteRemotes()...)
+	}
+	if len(remotes) == 0 {
 		return
 	}
 	shown := map[string]bool{}
@@ -418,12 +424,14 @@ func (a *appState) detachHidden(now time.Time) {
 			shown[id] = true
 		}
 	}
-	r.Each(func(p session.Handle) {
-		id := p.ID()
-		if shown[id] || p.TermIfOpen() == nil || now.Sub(a.paneShown[id]) < hiddenDetach {
-			return
-		}
-		r.Detach(id)
-		delete(a.paneShown, id)
-	})
+	for _, r := range remotes {
+		r.Each(func(p session.Handle) {
+			id := p.ID()
+			if shown[id] || p.TermIfOpen() == nil || now.Sub(a.paneShown[id]) < hiddenDetach {
+				return
+			}
+			r.Detach(id)
+			delete(a.paneShown, id)
+		})
+	}
 }

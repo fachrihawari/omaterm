@@ -52,6 +52,12 @@ func (d *Daemon) loadState() model.State {
 }
 
 func (d *Daemon) saveState(st model.State) error {
+	if d.remote.Load() {
+		// The app owns the sessions of a remote host: its state.json here
+		// would only hold what this daemon made when the app was away,
+		// which it never does.
+		return nil
+	}
 	st.Version = model.Version
 	return model.Save(d.stateFile(), st)
 }
@@ -80,7 +86,24 @@ var errAppClosed = func(what string) error {
 
 // handleOffline answers the omaterm command's methods.
 func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawMessage) (any, error) {
-	if d.appAttached() {
+	if d.remote.Load() {
+		switch method {
+		case "do", "actions", "browser", "git.changes", "git.diff", "worktree.merge", "pane.wake":
+			return nil, proto.Errorf(proto.CodeUsage, method+" isn't available in a session on a remote host")
+		}
+	}
+	// A remote host's app is the one that knows the sessions; without it,
+	// the command can use the panes that run, but not make or end any.
+	if d.remote.Load() && !d.appAttached() {
+		switch method {
+		case "state", "create", "split", "close", "restart", "rename", "focus", "select",
+			"project.create", "pane.wake":
+			return nil, proto.Errorf(proto.CodeAppClosed, "the omaterm window isn't connected to this host")
+		}
+	}
+	// New panes on a remote host get that host's PATH and control socket
+	// from pane.start, not the app's.
+	if d.appAttached() && !(d.remote.Load() && method == "pane.agentSession") {
 		switch method {
 		case "state", "create", "split", "close", "restart", "rename", "focus", "select", "wait",
 			"pane.agentSession", "project.create", "git.changes", "git.diff", "browser", "do", "actions", "pane.wake",
@@ -649,9 +672,16 @@ func (d *Daemon) startPaneWith(proj model.Project, sessionID, id, dir string, co
 // paneEnv is what a pane adds to the daemon's environment: the omaterm
 // command on its PATH, where to reach the app, and the app's display.
 func (d *Daemon) paneEnv() []string {
+	// A remote daemon is the only omaterm on its computer: the command in
+	// its panes reaches it, and it passes the calls on to the app. Here,
+	// the app's own control socket is the one that answers.
+	socket := paths.SocketPath()
+	if d.remote.Load() {
+		socket = d.opts.Socket
+	}
 	env := []string{
 		"PATH=" + paths.BinDir() + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"OMATERM_SOCKET=" + paths.SocketPath(),
+		"OMATERM_SOCKET=" + socket,
 	}
 	return append(env, d.envList()...)
 }

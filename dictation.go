@@ -49,10 +49,7 @@ var warmVoice = daemon.WarmVoice
 
 // voiceDaemon tells whether the session daemon runs, which writes the
 // recordings down. Tests say it does.
-var voiceDaemon = func(a *appState) bool {
-	_, ok := a.panes.(*daemon.Remote)
-	return ok
-}
+var voiceDaemon = func(a *appState) bool { return a.localRemote() != nil }
 
 // dictationStep is where a dictation is.
 type dictationStep int
