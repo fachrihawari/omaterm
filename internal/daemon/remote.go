@@ -45,6 +45,9 @@ type Remote struct {
 	// remote is set for a daemon on another computer: new panes get that
 	// daemon's PATH and control socket, and its app's display isn't ours.
 	remote bool
+	// passive is a connection web access uses: it lists and attaches, but
+	// never subscribes, so the daemon it reaches still sees no app.
+	passive bool
 	// quickly is how long a reconnect tries every 100ms (10s when 0).
 	quickly time.Duration
 	// viewed is the session the user looks at, sentViewed the last the
@@ -123,6 +126,19 @@ func ConnectRemote(t Transport) (*Remote, error) {
 	})
 }
 
+// ConnectRemotePassive connects to a host for its panes alone, as web
+// access does: it never subscribes, so it is not an app the remote daemon
+// forwards the command's calls to.
+func ConnectRemotePassive(t Transport) (*Remote, error) {
+	c, err := dialTransport(t)
+	if err != nil {
+		return nil, err
+	}
+	return newRemote(c, t, func(r *Remote) {
+		r.remote, r.passive, r.Spawn = true, true, nil
+	})
+}
+
 // dialTransport opens a control connection through t, naming t in the
 // error.
 func dialTransport(t Transport) (*client.Client, error) {
@@ -177,16 +193,18 @@ func (r *Remote) use(c *client.Client) error {
 		c.Close()
 		return err
 	}
-	if err := c.Call("subscribe", nil, nil); err != nil {
-		c.Close()
-		return err
-	}
 	// New panes see the display and session bus of the app's login
 	// session, which may be newer than the daemon's. A daemon on another
 	// computer has its own: the app's display and SSH agent are not its.
 	r.mu.Lock()
-	remote := r.remote
+	remote, passive := r.remote, r.passive
 	r.mu.Unlock()
+	if !passive {
+		if err := c.Call("subscribe", nil, nil); err != nil {
+			c.Close()
+			return err
+		}
+	}
 	if !remote {
 		env := map[string]string{}
 		for _, k := range SharedEnv {
@@ -205,8 +223,10 @@ func (r *Remote) use(c *client.Client) error {
 	viewed := r.viewed
 	r.mu.Unlock()
 	r.update(infos)
-	go r.events(c)
-	r.SetViewed(viewed)
+	if !passive {
+		go r.events(c)
+		r.SetViewed(viewed)
+	}
 	r.mu.Lock()
 	pending := len(r.closeLater) > 0
 	r.mu.Unlock()
@@ -220,6 +240,65 @@ func (r *Remote) client() *client.Client {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.c
+}
+
+// Closed tells whether the control connection has ended.
+func (r *Remote) Closed() bool {
+	c := r.client()
+	return c == nil || c.Closed()
+}
+
+// AttachConn opens a pane's attach connection to the host, its welcome
+// line kept for the caller: web access reads it as an attach socket's.
+func (r *Remote) AttachConn(pane string) (net.Conn, error) {
+	conn, err := r.transport.Dial()
+	if err != nil {
+		return nil, err
+	}
+	if err := json.NewEncoder(conn).Encode(proto.Hello{Kind: "attach", Version: proto.Version, Pane: pane}); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	br := bufio.NewReaderSize(conn, 64<<10)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	line, err := proto.ReadLine(br, 64<<10)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	conn.SetReadDeadline(time.Time{})
+	var w proto.Welcome
+	if err := json.Unmarshal(line, &w); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if w.Error != "" {
+		conn.Close()
+		return nil, errors.New(w.Error)
+	}
+	pre := append(append([]byte(nil), line...), '\n')
+	return &welcomeConn{Conn: conn, pre: pre, r: br}, nil
+}
+
+// welcomeConn is a pane's attach connection whose welcome line has been
+// read already, to hand to a reader that expects it first.
+type welcomeConn struct {
+	net.Conn
+	mu  sync.Mutex
+	pre []byte
+	r   *bufio.Reader
+}
+
+func (c *welcomeConn) Read(b []byte) (int, error) {
+	c.mu.Lock()
+	if len(c.pre) > 0 {
+		n := copy(b, c.pre)
+		c.pre = c.pre[n:]
+		c.mu.Unlock()
+		return n, nil
+	}
+	c.mu.Unlock()
+	return c.r.Read(b)
 }
 
 // Forward passes a call of the omaterm command on to the daemon, for as

@@ -23,6 +23,12 @@ func Dial(target string) (net.Conn, error) { return DialVersion(target, "") }
 // DialVersion is Dial, first refusing a host whose omaterm is another
 // version: an older one would open its window there instead of the bridge.
 func DialVersion(target, version string) (net.Conn, error) {
+	return DialVersionEnv(target, version, nil)
+}
+
+// DialVersionEnv is DialVersion with env added to the ssh process's: a
+// daemon's SSH_AUTH_SOCK, which its own environment may not carry.
+func DialVersionEnv(target, version string, env []string) (net.Conn, error) {
 	if target == "" {
 		return nil, errors.New("no SSH host")
 	}
@@ -30,7 +36,7 @@ func DialVersion(target, version string) (net.Conn, error) {
 		return nil, fmt.Errorf("bad SSH host %q", target)
 	}
 	cmd := exec.Command("ssh", append(sshArgs(), target, remoteCommand(version))...)
-	cmd.Env = os.Environ()
+	cmd.Env = envWith(os.Environ(), env)
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -167,6 +173,24 @@ func versionWord(v string) bool {
 
 // quote makes s one word for a POSIX shell.
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// envWith adds extra to base, its keys replacing the ones there.
+func envWith(base, extra []string) []string {
+	replace := map[string]bool{}
+	for _, e := range extra {
+		if k, _, ok := strings.Cut(e, "="); ok && k != "" {
+			replace[k] = true
+		}
+	}
+	out := make([]string, 0, len(base)+len(extra))
+	for _, e := range base {
+		if k, _, ok := strings.Cut(e, "="); ok && replace[k] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return append(out, extra...)
+}
 
 // conn is the bridge's standard input and output as a net.Conn.
 type conn struct {

@@ -30,7 +30,33 @@ type remoteHostForm struct {
 
 // startHosts connects the hosts settings.json names. Called once the
 // window exists, so a slow or unreachable host never holds the app up.
-func (a *appState) startHosts() { a.reloadHosts() }
+func (a *appState) startHosts() {
+	a.reloadHosts()
+	a.syncWebHosts()
+}
+
+// syncWebHosts tells the session daemon which hosts web access serves,
+// and drops them when web access is off. Its own connections are passive:
+// they list and attach, but never make it an app the host forwards calls
+// to.
+func (a *appState) syncWebHosts() {
+	r := a.localRemote()
+	if r == nil {
+		return
+	}
+	var list []map[string]string
+	if a.webOn {
+		for _, h := range a.settings.Hosts {
+			list = append(list, map[string]string{"id": h.ID, "name": h.Name, "ssh": h.SSH})
+		}
+	}
+	raw, _ := json.Marshal(list)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r.Forward(ctx, "hosts.update", raw)
+	}()
+}
 
 // reloadHosts lets go of every host and connects the configured ones
 // again: a host added, changed or removed in Settings.
@@ -116,6 +142,7 @@ func (a *appState) stopHost(id string) {
 func (a *appState) reconnectHost(h RemoteHost) {
 	a.stopHost(h.ID)
 	a.connectHost(h)
+	a.syncWebHosts()
 }
 
 func (a *appState) addHost() {
@@ -132,6 +159,7 @@ func (a *appState) addHost() {
 	a.hostForm = remoteHostForm{}
 	a.saveSettings()
 	a.connectHost(h)
+	a.syncWebHosts()
 }
 
 func (a *appState) removeHost(id string) {
@@ -149,6 +177,7 @@ func (a *appState) removeHost(id string) {
 	a.settings.Hosts = hosts
 	a.saveSettings()
 	a.stopHost(id)
+	a.syncWebHosts()
 	a.settingsGo("hosts")
 }
 
@@ -267,6 +296,7 @@ func (a *appState) setupHost(ctx context.Context, h RemoteHost, r *daemon.Remote
 		}
 		a.pruneUnknownPanes(r)
 		a.syncStatus()
+		a.syncWebHosts()
 	})
 }
 

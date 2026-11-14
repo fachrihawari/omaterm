@@ -112,10 +112,12 @@ func (a *appState) changeWebSaying(c *ui.Context, change func(*web.Config), said
 				// It didn't start (the port is taken…): it isn't on.
 				cfg, _ := webStore().SetConfig(func(cfg *web.Config) { cfg.Enabled = false })
 				a.webOn, a.webNetwork = false, cfg.OnNetwork()
+				a.syncWebHosts()
 				say("Web access could not start: " + err.Error())
 				return
 			}
 			a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
+			a.syncWebHosts()
 			switch {
 			case said != "":
 				say(said)

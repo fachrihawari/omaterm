@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"omaterm/internal/agent"
@@ -130,6 +131,15 @@ func (a *appState) syncStatus() {
 	if a.host != nil {
 		a.host.changed()
 	}
+	if a.webOn && len(a.settings.Hosts) > 0 {
+		if r := a.localRemote(); r != nil {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				r.Forward(ctx, "web.touch", nil)
+			}()
+		}
+	}
 	dirs := map[string]bool{}
 	for _, i := range next {
 		if a.hosts != nil && a.hosts.hostOfPane(i.ID) != "" {
@@ -189,6 +199,13 @@ func (a *appState) statusChanged(prev, next map[string]session.Info) {
 		if prev[id].Status == session.Working && n.Status != session.Working {
 			turnEnded = true
 		}
+		if a.webOn && a.hosts != nil {
+			if p, ok := prev[id]; ok && p.Status != n.Status {
+				if host := a.hosts.hostOfPane(id); host != "" && host != "?" {
+					a.pushWeb(host, n, p.Status)
+				}
+			}
+		}
 	}
 	// What an agent changed in its turn shows as it ends: the Git tab
 	// and its count, and the files.
@@ -198,6 +215,25 @@ func (a *appState) statusChanged(prev, next map[string]session.Info) {
 			a.rebuildFileTree()
 		}
 	}
+}
+
+// pushWeb tells the phones of a remote pane's change, as the daemon does
+// for its own panes: the app sees the change, the daemon sends it.
+func (a *appState) pushWeb(host string, info session.Info, prev session.Status) {
+	r := a.localRemote()
+	if r == nil {
+		return
+	}
+	raw, _ := json.Marshal(struct {
+		Host string       `json:"host"`
+		Info session.Info `json:"info"`
+		Prev string       `json:"prev"`
+	}{a.hostName(host), info, string(prev)})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r.Forward(ctx, "web.push", raw)
+	}()
 }
 
 // ring answers a program's bell as the settings say: the pane flashes,

@@ -138,6 +138,11 @@ type Daemon struct {
 	// unlike subscribers are no app.
 	watchers  map[int]func()
 	nextWatch int
+	// webHosts are the remote daemons web access reaches, by host ID, and
+	// webHostGen changes as the app replaces the list: a connection still
+	// starting for an old one is dropped.
+	webHosts   map[string]*Remote
+	webHostGen int
 
 	webMu   sync.Mutex
 	web     *web.Server
@@ -239,6 +244,7 @@ func Start(opts Options) (*Daemon, error) {
 	d := &Daemon{opts: opts, reg: session.NewRegistry(), quit: make(chan struct{}),
 		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now(),
 		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}, watchers: map[int]func(){},
+		webHosts:     map[string]*Remote{},
 		procProjects: map[string]model.Project{}, procMtimes: map[string]fileStamp{},
 		devRouter: devurl.NewRouter(), shares: map[procKey]*share{}, shareNotes: map[procKey]string{}, voice: opts.Voice}
 	d.remote.Store(opts.Remote)
@@ -343,6 +349,14 @@ func (d *Daemon) Stop() {
 		d.procs.Close()
 		d.saveHistories(true)
 		close(d.quit)
+		d.mu.Lock()
+		hosts := d.webHosts
+		d.webHosts = map[string]*Remote{}
+		d.webHostGen++
+		d.mu.Unlock()
+		for _, r := range hosts {
+			r.Close()
+		}
 		d.stopWeb()
 		d.stopProxy()
 		d.stopShares()
@@ -514,8 +528,28 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 
 func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	if mail.IsMethod(method) {
-		// The daemon's own, as its panes are: never the app's.
+		// A mailbox belongs with the panes it types into: one on a remote
+		// host answers for those panes.
+		if id := mailPaneID(method, raw); id != "" && d.reg.Get(id) == nil {
+			if out, err := d.forwardWebPane(ctx, method, raw); err == nil || proto.CodeOf(err) != proto.CodeNotFound {
+				return out, err
+			}
+		}
+		if method == "mail.cancel" {
+			for _, r := range d.webRemotes() {
+				if out, err := r.Forward(ctx, method, raw); err == nil {
+					return out, nil
+				}
+			}
+		}
 		return d.mailbox.Serve(ctx, method, raw)
+	}
+	// A pane of a remote host is not in this daemon's registry: web
+	// access's calls go to the host that runs it.
+	if id := paneCallID(method, raw); id != "" && d.reg.Get(id) == nil {
+		if out, err := d.forwardWebPane(ctx, method, raw); err == nil || proto.CodeOf(err) != proto.CodeNotFound {
+			return out, err
+		}
 	}
 	pane := func(id string) (*session.Pane, error) {
 		if p := d.reg.Get(id); p != nil {
@@ -530,6 +564,29 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		// The app reaches this daemon through its bridge: that app owns
 		// the sessions, even if a service started the daemon at login.
 		d.remote.Store(true)
+		return true, nil
+	case "hosts.update":
+		var list []WebHost
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		d.setWebHosts(list)
+		return true, nil
+	case "web.touch":
+		// The app saw a remote pane change: the pages fetch the state
+		// again, as they do for a local one.
+		d.changed()
+		return true, nil
+	case "web.push":
+		var p struct {
+			Host string       `json:"host"`
+			Info session.Info `json:"info"`
+			Prev string       `json:"prev"`
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		d.pushRemote(p.Host, p.Info, session.Status(p.Prev))
 		return true, nil
 	case "panes":
 		return d.reg.Infos(), nil
@@ -874,6 +931,22 @@ func (d *Daemon) Watch(fn func()) func() {
 // AttachPipe attaches to a pane in process: the connection carries what
 // an attach socket would, the welcome line and then frames.
 func (d *Daemon) AttachPipe(pane string) net.Conn {
+	if d.reg.Get(pane) == nil {
+		// A pane of a remote host: the page attaches through the bridge,
+		// as the window's terminal does. A host that doesn't run it answers
+		// its welcome with an error; the next host is tried.
+		for _, r := range d.webRemotes() {
+			if c, err := r.AttachConn(pane); err == nil {
+				return c
+			}
+		}
+		ours, theirs := net.Pipe()
+		go func() {
+			ours.Write([]byte("{\"error\":\"no such pane\"}\n"))
+			ours.Close()
+		}()
+		return theirs
+	}
 	ours, theirs := net.Pipe()
 	go func() {
 		defer ours.Close()

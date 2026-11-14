@@ -158,6 +158,15 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 		if pn == nil {
 			return nil, proto.Errorf(proto.CodeNotFound, "no pane "+p.ID)
 		}
+		if host := projectHost(&st, s.Project); host != "" {
+			// A passive host connection can attach to a pane that already
+			// runs there, even one started after it connected; only the
+			// app can start one that doesn't.
+			if d.remoteForPane(p.ID) != nil || len(d.webRemotes()) > 0 {
+				return true, nil
+			}
+			return nil, proto.Errorf(proto.CodeAppClosed, "open omaterm to start this pane on "+host)
+		}
 		if pn.URL != "" {
 			return nil, proto.Errorf(proto.CodeNotFound, "pane "+p.ID+" is a browser, not a terminal")
 		}
@@ -285,9 +294,14 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 // panes' Info.
 func (d *Daemon) protoState(st model.State) proto.State {
 	infos := d.reg.Infos()
+	for _, r := range d.webRemotes() {
+		for id, info := range r.Infos() {
+			infos[id] = info
+		}
+	}
 	out := proto.State{Started: d.started.UnixMilli()}
 	for _, p := range st.Projects {
-		out.Projects = append(out.Projects, proto.Project{ID: p.ID, Name: p.Name, Dir: p.Dir})
+		out.Projects = append(out.Projects, proto.Project{ID: p.ID, Name: p.Name, Dir: p.Dir, Host: p.Host})
 	}
 	for _, s := range st.Sessions {
 		ps := proto.Session{ID: s.ID, Project: s.Project, AgentNamed: s.AgentNamed, Focus: s.Focus, Zoomed: s.Zoomed, Layout: s.Layout,
@@ -352,6 +366,9 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 		return nil, err
 	}
 	proj := st.Projects[pi]
+	if proj.Host != "" {
+		return nil, proto.Errorf(proto.CodeAppClosed, "open omaterm to make a session on "+proj.Host)
+	}
 	dir := p.Dir
 	if dir == "" {
 		dir = proj.Dir
@@ -461,6 +478,9 @@ func (d *Daemon) createWorktree(ctx context.Context, p proto.CreateParams) (any,
 		return nil, err
 	}
 	proj := v.(model.Project)
+	if proj.Host != "" {
+		return nil, proto.Errorf(proto.CodeAppClosed, "worktrees are made on this computer, not on "+proj.Host)
+	}
 	from := p.Dir
 	if from == "" {
 		from = proj.Dir
@@ -553,6 +573,9 @@ func (d *Daemon) split(st *model.State, p proto.CreateParams) (any, error) {
 	}
 	if target == nil {
 		return nil, proto.Errorf(proto.CodeNotFound, "no pane or session "+p.Split)
+	}
+	if s != nil && projectHost(st, s.Project) != "" {
+		return nil, proto.Errorf(proto.CodeAppClosed, "open omaterm to split a session on "+projectHost(st, s.Project))
 	}
 	ratio := p.Ratio
 	if ratio <= 0 || ratio >= 1 {
@@ -703,6 +726,11 @@ func projectOf(st *model.State, id string) model.Project {
 	return model.Project{}
 }
 
+// projectHost is the remote host of a project, "" for this computer.
+func projectHost(st *model.State, id string) string {
+	return projectOf(st, id).Host
+}
+
 func findPane(st *model.State, id string) (*model.Session, *model.Pane) {
 	for i := range st.Sessions {
 		s := &st.Sessions[i]
@@ -777,6 +805,10 @@ func (d *Daemon) restore() {
 	d.stateMu.Unlock()
 	n := 0
 	for _, s := range st.Sessions {
+		if projectHost(&st, s.Project) != "" {
+			// A remote host's panes run there, not here.
+			continue
+		}
 		for _, pn := range s.Panes {
 			if pn.URL != "" || d.reg.Get(pn.ID) != nil {
 				continue
@@ -807,6 +839,9 @@ func (d *Daemon) restorePrefs() (restore, resume bool) {
 // restorePane starts a pane of state.json from its scrollback, its agent
 // resuming its conversation when resume.
 func (d *Daemon) restorePane(st *model.State, s *model.Session, pn model.Pane, resume bool) error {
+	if host := projectHost(st, s.Project); host != "" {
+		return proto.Errorf(proto.CodeAppClosed, "open omaterm to start this pane on "+host)
+	}
 	dir, err := s.Worktree.PaneDir(pn.Dir)
 	if err != nil {
 		return err

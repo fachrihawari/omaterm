@@ -31,9 +31,10 @@ const maxPatch = 1 << 20
 // works in, its worktree's or else its project's; base, the branch a
 // worktree's changes are since, "" for none; and the pane itself.
 type paneFolder struct {
-	root string
-	base string
-	pane proto.Pane
+	root   string
+	base   string
+	pane   proto.Pane
+	remote bool
 }
 
 // folder finds the pane id's session in the state, as the daemon has it
@@ -60,7 +61,7 @@ func (s *Server) folder(ctx context.Context, id string) (paneFolder, bool) {
 			}
 			for _, pr := range st.Projects {
 				if pr.ID == sess.Project && pr.Dir != "" {
-					f.root = pr.Dir
+					f.root, f.remote = pr.Dir, pr.Host != ""
 				}
 			}
 			return f, f.root != ""
@@ -74,8 +75,13 @@ func (s *Server) paneFolderOr404(w http.ResponseWriter, r *http.Request) (paneFo
 	f, ok := s.folder(r.Context(), r.PathValue("id"))
 	if !ok {
 		http.Error(w, "no such pane", http.StatusNotFound)
+		return f, false
 	}
-	return f, ok
+	if f.remote {
+		http.Error(w, "Files stay on the remote host", http.StatusBadRequest)
+		return f, false
+	}
+	return f, true
 }
 
 // fileError answers a read that failed: a path that leaves the folder is

@@ -3,6 +3,22 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.16.0
+
+Remote sessions from a phone, and a safer daemon.
+
+### Remote hosts
+
+- **Web access shows the sessions of remote hosts too.** Their projects
+  join the phone's sidebar with a host chip; tapping a pane streams it,
+  typing and Compose work, and the New Session sheet makes one there. Files
+  and Changes stay on the host for now, and the page says so.
+- **Remote agents reach the phone.** Their waiting, done and failed
+  changes are pushed while the window is open, as local ones are.
+- **The session daemon leaves remote panes alone.** At login it no longer
+  starts a remote project's panes here as local shells; they belong to
+  their host.
+
 ## 0.15.0
 
 Sessions on another computer, over SSH.

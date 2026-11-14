@@ -95,6 +95,7 @@ func (a *appState) useDaemon() {
 				// as at launch: they ran on unseen.
 				a.pruneUnknownPanes(r)
 				a.refreshProcList()
+				a.syncWebHosts()
 				if a.saveDeferred {
 					a.saveDeferred = false
 					a.saveState()
@@ -107,6 +108,7 @@ func (a *appState) useDaemon() {
 	a.setProcHost(&remoteProcs{remote: r})
 
 	a.pruneUnknownPanes(r)
+	a.syncWebHosts()
 	// Another build, even of this version: its sessions run older code.
 	if r.Version() != daemon.Build(appVersion()) {
 		a.daemonStale = daemon.VersionOf(r.Version())

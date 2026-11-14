@@ -36,6 +36,9 @@ func (h *localHost) createWorktree(ctx context.Context, p proto.CreateParams) (a
 		if pi < 0 || pi >= len(a.projects) {
 			return nil, proto.Errorf(proto.CodeNotFound, "no project "+p.Project)
 		}
+		if a.projects[pi].Host != "" {
+			return nil, proto.Errorf(proto.CodeUsage, "worktrees are made on this computer, not on "+a.projects[pi].Host)
+		}
 		if a.projects[pi].ID == "" {
 			a.projects[pi].ID = newID()
 		}

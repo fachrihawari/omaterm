@@ -457,7 +457,11 @@ func remoteAction(id string) bool {
 func (a *appState) protoState(started time.Time) proto.State {
 	st := proto.State{Viewed: a.viewedSession(), Started: started.UnixMilli()}
 	for _, p := range a.projects {
-		st.Projects = append(st.Projects, proto.Project{ID: p.ID, Name: p.Name, Dir: p.Path, Host: p.Host})
+		host := p.Host
+		if host != "" {
+			host = a.hostName(host)
+		}
+		st.Projects = append(st.Projects, proto.Project{ID: p.ID, Name: p.Name, Dir: p.Path, Host: host})
 		focus := ""
 		if p.ID == a.wsOwner {
 			focus = a.activePaneTermID
@@ -550,6 +554,13 @@ func (a *appState) projectFor(ref, dir, host string) int {
 	if ref != "" {
 		for i, p := range a.projects {
 			if p.Host == "" && (p.ID == ref || strings.EqualFold(p.Name, ref)) {
+				return i
+			}
+		}
+		// A project named outright on a remote host is made there: web
+		// access's new session names one, with no host field of its own.
+		for i, p := range a.projects {
+			if p.Host != "" && (p.ID == ref || strings.EqualFold(p.Name, ref)) {
 				return i
 			}
 		}
@@ -672,6 +683,9 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 		return nil, proto.Errorf(proto.CodeUsage, "browser panes belong to this computer: a remote session has terminal panes only")
 	}
 	proj := &a.projects[pi]
+	if proj.Host != "" && p.URL != "" {
+		return nil, proto.Errorf(proto.CodeUsage, "browser panes belong to this computer: a remote session has terminal panes only")
+	}
 	if proj.ID == "" {
 		proj.ID = newID()
 	}
@@ -802,8 +816,8 @@ func (a *appState) projectTabsPtr(p *project) *[]topTab {
 func (a *appState) cliSplit(p proto.CreateParams) (any, error) {
 	pi, tabs, ti, ok := a.findPane(p.Split)
 	if !ok {
-		if _, stabs, sti, sok := a.findSession(p.Split); sok {
-			tabs, ti, ok = stabs, sti, true
+		if pj, stabs, sti, sok := a.findSession(p.Split); sok {
+			pi, tabs, ti, ok = pj, stabs, sti, true
 			if ids := (*stabs)[sti].Split.termIDs(); len(ids) > 0 {
 				p.Split = ids[0]
 			}
@@ -812,7 +826,9 @@ func (a *appState) cliSplit(p proto.CreateParams) (any, error) {
 	if !ok {
 		return nil, proto.Errorf(proto.CodeNotFound, "no pane "+p.Split)
 	}
-	_ = pi
+	if pi >= 0 && pi < len(a.projects) && a.projects[pi].Host != "" && p.URL != "" {
+		return nil, proto.Errorf(proto.CodeUsage, "browser panes belong to this computer: a remote session has terminal panes only")
+	}
 	tab := &(*tabs)[ti]
 	dir := splitVertical
 	before := false

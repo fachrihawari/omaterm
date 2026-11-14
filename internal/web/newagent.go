@@ -197,7 +197,9 @@ func (s *Server) newOptions(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Agents = append(out.Agents, a)
 	}
-	if dir := s.projectDir(r.Context(), r.URL.Query().Get("project")); dir != "" {
+	// A remote project's git is on its host: the sheet offers no
+	// worktree for it.
+	if dir, remote := s.projectFolder(r.Context(), r.URL.Query().Get("project")); dir != "" && !remote {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		if repo, err := gitsnap.Open(ctx, dir); err == nil {
@@ -209,24 +211,31 @@ func (s *Server) newOptions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-// projectDir is the folder of the project id, "" for none.
-func (s *Server) projectDir(ctx context.Context, id string) string {
+// projectFolder is the folder of the project id and whether it is on a
+// remote host.
+func (s *Server) projectFolder(ctx context.Context, id string) (string, bool) {
 	if id == "" {
-		return ""
+		return "", false
 	}
 	v, err := s.d.Handle(ctx, "state", nil)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	raw, _ := json.Marshal(v)
 	var st proto.State
 	if json.Unmarshal(raw, &st) != nil {
-		return ""
+		return "", false
 	}
 	for _, p := range st.Projects {
 		if p.ID == id {
-			return p.Dir
+			return p.Dir, p.Host != ""
 		}
 	}
-	return ""
+	return "", false
+}
+
+// projectDir is the folder of the project id, "" for none.
+func (s *Server) projectDir(ctx context.Context, id string) string {
+	dir, _ := s.projectFolder(ctx, id)
+	return dir
 }

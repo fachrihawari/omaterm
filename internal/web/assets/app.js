@@ -551,8 +551,9 @@ function renderSidebar() {
     const standardSessions = allSessions.filter((s) => !s.process);
     const processSessions = allSessions.filter((s) => Boolean(s.process));
 
-    const projHead = h("div", { class: "proj", title: proj.dir },
+    const projHead = h("div", { class: "proj", title: proj.host ? `${proj.host}:${proj.dir}` : proj.dir },
       h("span", { class: "name" }, proj.name),
+      ...(proj.host ? [h("span", { class: "proj-host", title: "Remote host" }, proj.host)] : []),
       h("button", {
         class: "ib add", title: `New session in ${proj.name}`, "aria-label": `New session in ${proj.name}`,
         onclick: (e) => { e.stopPropagation(); newSession(proj.id); },
@@ -932,6 +933,7 @@ function showTerm(id) {
 
   const f = paneByID(id);
   const proj = state?.projects.find((p) => p.id === f?.session.project);
+  const remote = Boolean(proj?.host);
 
   const backBtn = h("a", { class: "back-btn", href: "#", "aria-label": "Back to session list" }, icon("back", "s16"));
   const gripLogo = h("span", { class: "logo" });
@@ -960,12 +962,13 @@ function showTerm(id) {
   // switch between the three, and a close that goes back to the terminal.
   const paneHash = `#/pane/${encodeURIComponent(id)}`;
   const browseBtn = h("a", {
-    class: "ib btn-view btn-browse", href: paneHash + "/files", title: "Output, Files and Changes", "aria-label": "Output, Files and Changes",
+    class: "ib btn-view btn-browse", href: paneHash + "/files", title: "Output, Files and Changes", "aria-label": "Output, Files and Changes", hidden: remote,
   }, icon("files", "s14"));
   const segOutput = h("a", { href: paneHash + "/output" }, "Output");
-  const segFiles = h("a", { href: paneHash + "/files" }, "Files");
-  const segChanges = h("a", { href: paneHash + "/changes" }, "Changes");
-  const seg = h("nav", { class: "bv-seg", "aria-label": "Output, Files or Changes" }, segOutput, segFiles, segChanges);
+  const segFiles = remote ? null : h("a", { href: paneHash + "/files" }, "Files");
+  const segChanges = remote ? null : h("a", { href: paneHash + "/changes" }, "Changes");
+  const seg = h("nav", { class: "bv-seg", "aria-label": "Output, Files or Changes" },
+    segOutput, ...(remote ? [] : [segFiles, segChanges]));
   const closeBtn = h("a", {
     class: "ib btn-view btn-close", href: paneHash, title: "Back to the terminal", "aria-label": "Back to the terminal",
   }, icon("close", "s14"));
@@ -1349,11 +1352,14 @@ function showTerm(id) {
     composeBox.prefill(text);
   };
   const showView = (kind, path) => {
+    // Files and changes are on the host for a remote pane: the page shows
+    // its output there, and the phone says so in the list instead.
+    if (remote && (kind === "files" || kind === "file" || kind === "changes" || kind === "diff")) kind = "output";
     const group = { output: "output", files: "files", file: "files", changes: "changes", diff: "changes" }[kind];
     if (group) browseBtn.href = paneHash + "/" + group;
     segOutput.classList.toggle("on", group === "output");
-    segFiles.classList.toggle("on", group === "files");
-    segChanges.classList.toggle("on", group === "changes");
+    segFiles?.classList.toggle("on", group === "files");
+    segChanges?.classList.toggle("on", group === "changes");
     if (!kind) {
       delete card.dataset.view;
       if (!touch) xt.focus();
